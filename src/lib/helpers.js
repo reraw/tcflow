@@ -57,13 +57,15 @@ export const VENDOR_TYPES = ['Escrow', 'Title', 'Home Inspector', 'Termite', 'Ho
 
 export const DEFAULT_CONTINGENCIES = ['Loan', 'Appraisal', 'Inspection', 'Disclosures', 'HOA', 'Insurability', 'Prelim']
 
-export function generateReminders(deals, allCustomDates = []) {
+export function generateReminders(deals, allCustomDates = [], options = {}) {
+  const { noDateLimit = false, includeClosed = false } = options
   const today = new Date()
   today.setHours(0, 0, 0, 0)
+  const within = (days) => noDateLimit || days <= 14
   const reminders = []
 
   deals.forEach(deal => {
-    if (deal.status === 'closed' || deal.status === 'cancelled') return
+    if (!includeClosed && (deal.status === 'closed' || deal.status === 'cancelled')) return
     if (!deal.close_date) return
 
     const closeDate = parseISO(deal.close_date)
@@ -71,8 +73,8 @@ export function generateReminders(deals, allCustomDates = []) {
 
     const daysToClose = differenceInDays(closeDate, today)
 
-    // Close of escrow: past due OR within 14 days
-    if (daysToClose <= 14) {
+    // Close of escrow
+    if (within(daysToClose)) {
       reminders.push({
         date: closeDate,
         label: `Close of Escrow — ${deal.address}`,
@@ -88,7 +90,7 @@ export function generateReminders(deals, allCustomDates = []) {
     // Yellow: 1 week before close
     const oneWeekBefore = addDays(closeDate, -7)
     const daysToOneWeek = differenceInDays(oneWeekBefore, today)
-    if (daysToOneWeek <= 14) {
+    if (within(daysToOneWeek)) {
       reminders.push({
         date: oneWeekBefore,
         label: `1 Week to Close — ${deal.address}`,
@@ -101,12 +103,12 @@ export function generateReminders(deals, allCustomDates = []) {
     }
 
     // Orange: Two file check touchpoints between 1 week and close
-    if (daysToClose > 7) {
+    if (daysToClose > 7 || noDateLimit) {
       const interval = 7 / 3
       for (let i = 1; i <= 2; i++) {
         const touchDate = addDays(closeDate, -(7 - Math.round(interval * i)))
         const daysTillTouch = differenceInDays(touchDate, today)
-        if (daysTillTouch <= 14) {
+        if (within(daysTillTouch)) {
           reminders.push({
             date: touchDate,
             label: `File Check ${i} — ${deal.address}`,
@@ -126,7 +128,7 @@ export function generateReminders(deals, allCustomDates = []) {
       const cDate = parseISO(cd.date)
       if (!isValid(cDate)) return
       const daysTill = differenceInDays(cDate, today)
-      if (daysTill <= 14) {
+      if (within(daysTill)) {
         reminders.push({
           date: cDate,
           label: `${cd.label.replace(/^Contingency:\s?/, '')} — ${deal.address}`,
@@ -147,6 +149,31 @@ export function generateReminders(deals, allCustomDates = []) {
     if (a.overdue && b.overdue) return a.daysOut - b.daysOut // most overdue first
     return a.date - b.date
   })
+}
+
+// Parse a reminder_key back into a display label for the Completed tab.
+// Keys come in the form: close_<dealId> | 1week_<dealId> | filecheck1_<dealId>
+// | filecheck2_<dealId> | cont_<customDateId>
+export function labelForReminderKey(key, address, customDatesById = {}) {
+  const addr = address || 'Unknown deal'
+  if (key.startsWith('close_')) return `Close of Escrow — ${addr}`
+  if (key.startsWith('1week_')) return `1 Week to Close — ${addr}`
+  if (key.startsWith('filecheck1_')) return `File Check 1 — ${addr}`
+  if (key.startsWith('filecheck2_')) return `File Check 2 — ${addr}`
+  if (key.startsWith('cont_')) {
+    const cd = customDatesById[key.slice('cont_'.length)]
+    const rawLabel = cd?.label ? cd.label.replace(/^Contingency:\s?/, '') : 'Contingency'
+    return `${rawLabel} — ${addr}`
+  }
+  return `Reminder — ${addr}`
+}
+
+export function colorForReminderKey(key) {
+  if (key.startsWith('close_')) return 'red'
+  if (key.startsWith('1week_')) return 'yellow'
+  if (key.startsWith('filecheck')) return 'orange'
+  if (key.startsWith('cont_')) return 'lavender'
+  return 'lavender'
 }
 
 export const REMINDER_COLORS = {

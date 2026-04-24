@@ -213,28 +213,35 @@ export function useReminderDismissals() {
   const [dismissals, setDismissals] = useState([])
 
   const fetchDismissals = useCallback(async () => {
-    const { data } = await supabase.from('reminder_dismissals').select('*')
+    const { data } = await supabase.from('reminder_dismissals').select('*, deals(address)')
     setDismissals(data || [])
   }, [])
 
   useEffect(() => { fetchDismissals() }, [fetchDismissals])
 
-  const isDismissed = (dealId, reminderKey) => {
-    return dismissals.some(d => d.deal_id === dealId && d.reminder_key === reminderKey)
-  }
+  const findDismissal = (dealId, reminderKey) =>
+    dismissals.find(d => d.deal_id === dealId && d.reminder_key === reminderKey)
+
+  const isDismissed = (dealId, reminderKey) => !!findDismissal(dealId, reminderKey)
+
+  const getCompletedAt = (dealId, reminderKey) => findDismissal(dealId, reminderKey)?.completed_at || null
 
   const toggleDismissal = async (dealId, reminderKey) => {
-    const existing = dismissals.find(d => d.deal_id === dealId && d.reminder_key === reminderKey)
+    const existing = findDismissal(dealId, reminderKey)
     if (existing) {
       await supabase.from('reminder_dismissals').delete().eq('id', existing.id)
       setDismissals(prev => prev.filter(d => d.id !== existing.id))
     } else {
-      const { data } = await supabase.from('reminder_dismissals').insert({ deal_id: dealId, reminder_key: reminderKey }).select().single()
+      const { data } = await supabase
+        .from('reminder_dismissals')
+        .insert({ deal_id: dealId, reminder_key: reminderKey, completed_at: new Date().toISOString() })
+        .select('*, deals(address)')
+        .single()
       if (data) setDismissals(prev => [...prev, data])
     }
   }
 
-  return { dismissals, isDismissed, toggleDismissal }
+  return { dismissals, isDismissed, getCompletedAt, toggleDismissal }
 }
 
 export function useTasks(dealId) {
