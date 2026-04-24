@@ -44,17 +44,22 @@ export function getStatusLabel(status) {
   return labels[status] || status
 }
 
-/**
- * Generate color-coded reminders for the next 14 days
- * Red = close of escrow
- * Yellow = 1 week before close
- * Orange = two evenly spaced file check touchpoints between 1 week out and close
- * Lavender = contingency removals
- */
-export function generateReminders(deals, allContingencies = []) {
+export function getRepLabel(rep) {
+  const labels = {
+    seller_only: 'Seller Only',
+    buyer_only: 'Buyer Only',
+    both: 'Both (Double-Ended)',
+  }
+  return labels[rep] || rep || '—'
+}
+
+export const VENDOR_TYPES = ['Escrow', 'Title', 'Home Inspector', 'Termite', 'Home Warranty', 'Lender', 'Stager', 'Photographer', 'Notary', 'Other']
+
+export const DEFAULT_CONTINGENCIES = ['Loan', 'Appraisal', 'Inspection', 'Disclosures', 'HOA', 'Insurability', 'Prelim']
+
+export function generateReminders(deals, allCustomDates = []) {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
-  const endDate = addDays(today, 14)
   const reminders = []
 
   deals.forEach(deal => {
@@ -66,77 +71,87 @@ export function generateReminders(deals, allContingencies = []) {
 
     const daysToClose = differenceInDays(closeDate, today)
 
-    // Red: Close of escrow within 14 days
-    if (daysToClose >= 0 && daysToClose <= 14) {
+    // Close of escrow: past due OR within 14 days
+    if (daysToClose <= 14) {
       reminders.push({
         date: closeDate,
         label: `Close of Escrow — ${deal.address}`,
         color: 'red',
         deal,
         daysOut: daysToClose,
+        overdue: daysToClose < 0,
+        isCloseOfEscrow: true,
+        key: `close_${deal.id}`,
       })
     }
 
     // Yellow: 1 week before close
     const oneWeekBefore = addDays(closeDate, -7)
     const daysToOneWeek = differenceInDays(oneWeekBefore, today)
-    if (daysToOneWeek >= 0 && daysToOneWeek <= 14) {
+    if (daysToOneWeek <= 14) {
       reminders.push({
         date: oneWeekBefore,
         label: `1 Week to Close — ${deal.address}`,
         color: 'yellow',
         deal,
         daysOut: daysToOneWeek,
+        overdue: daysToOneWeek < 0,
+        key: `1week_${deal.id}`,
       })
     }
 
-    // Orange: Two evenly spaced touchpoints between 1 week and close
+    // Orange: Two file check touchpoints between 1 week and close
     if (daysToClose > 7) {
-      const gap = 7
-      const interval = gap / 3
+      const interval = 7 / 3
       for (let i = 1; i <= 2; i++) {
         const touchDate = addDays(closeDate, -(7 - Math.round(interval * i)))
         const daysTillTouch = differenceInDays(touchDate, today)
-        if (daysTillTouch >= 0 && daysTillTouch <= 14) {
+        if (daysTillTouch <= 14) {
           reminders.push({
             date: touchDate,
             label: `File Check ${i} — ${deal.address}`,
             color: 'orange',
             deal,
             daysOut: daysTillTouch,
+            overdue: daysTillTouch < 0,
+            key: `filecheck${i}_${deal.id}`,
           })
         }
       }
     }
 
-    // Lavender: Contingency removals
-    const dealContingencies = allContingencies.find(c => c.deal_id === deal.id)
-    if (dealContingencies) {
-      const contingencyTypes = ['loan', 'appraisal', 'inspection', 'disclosures', 'hoa', 'insurability', 'prelim']
-      contingencyTypes.forEach(type => {
-        if (!dealContingencies[type]) return
-        const cDate = parseISO(dealContingencies[type])
-        if (!isValid(cDate)) return
-        const daysTill = differenceInDays(cDate, today)
-        if (daysTill >= 0 && daysTill <= 14) {
-          reminders.push({
-            date: cDate,
-            label: `${type.charAt(0).toUpperCase() + type.slice(1)} Contingency — ${deal.address}`,
-            color: 'lavender',
-            deal,
-            daysOut: daysTill,
-          })
-        }
-      })
-    }
+    // Lavender: Contingency dates from custom_dates
+    const dealDates = allCustomDates.filter(cd => cd.deal_id === deal.id && (cd.label.startsWith('Contingency:') || cd.label.startsWith('Contingency: ')))
+    dealDates.forEach(cd => {
+      const cDate = parseISO(cd.date)
+      if (!isValid(cDate)) return
+      const daysTill = differenceInDays(cDate, today)
+      if (daysTill <= 14) {
+        reminders.push({
+          date: cDate,
+          label: `${cd.label.replace(/^Contingency:\s?/, '')} — ${deal.address}`,
+          color: 'lavender',
+          deal,
+          daysOut: daysTill,
+          overdue: daysTill < 0,
+          key: `cont_${cd.id}`,
+        })
+      }
+    })
   })
 
-  return reminders.sort((a, b) => a.date - b.date)
+  // Sort: overdue first (most overdue at top), then by date ascending
+  return reminders.sort((a, b) => {
+    if (a.overdue && !b.overdue) return -1
+    if (!a.overdue && b.overdue) return 1
+    if (a.overdue && b.overdue) return a.daysOut - b.daysOut // most overdue first
+    return a.date - b.date
+  })
 }
 
 export const REMINDER_COLORS = {
   red: { bg: 'bg-red-50 border-red-300', dot: 'bg-red-500', text: 'text-red-800', label: 'Close of Escrow' },
   yellow: { bg: 'bg-yellow-50 border-yellow-300', dot: 'bg-yellow-400', text: 'text-yellow-800', label: '1 Week to Close' },
   orange: { bg: 'bg-orange-50 border-orange-300', dot: 'bg-orange-400', text: 'text-orange-800', label: 'File Check' },
-  lavender: { bg: 'bg-purple-50 border-purple-300', dot: 'bg-purple-400', text: 'text-purple-800', label: 'Contingency Removal' },
+  lavender: { bg: 'bg-purple-50 border-purple-300', dot: 'bg-purple-400', text: 'text-purple-800', label: 'Contingency Deadline' },
 }
