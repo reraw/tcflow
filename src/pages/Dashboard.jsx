@@ -56,13 +56,22 @@ export default function Dashboard() {
   }
   const thisMonthDeals = deals.filter(d => d.status !== 'cancelled' && dealInThisMonth(d))
   const sumFee = (arr) => arr.reduce((s, d) => s + (Number(d.tc_fee) || 0), 0)
+  const closedPaidDeals = thisMonthDeals.filter(d => d.status === 'closed' && d.tc_paid)
+  const closedUnpaidDeals = thisMonthDeals.filter(d => d.status === 'closed' && !d.tc_paid)
+  const stillToCloseDeals = thisMonthDeals.filter(d => d.status !== 'closed')
   const thisMonthProjected = sumFee(thisMonthDeals)
-  const thisMonthClosedPaid = sumFee(thisMonthDeals.filter(d => d.status === 'closed' && d.tc_paid))
-  const thisMonthClosedUnpaid = sumFee(thisMonthDeals.filter(d => d.status === 'closed' && !d.tc_paid))
-  const thisMonthStillToClose = sumFee(thisMonthDeals.filter(d => d.status !== 'closed'))
+  const thisMonthClosedPaid = sumFee(closedPaidDeals)
+  const thisMonthClosedUnpaid = sumFee(closedUnpaidDeals)
+  const thisMonthStillToClose = sumFee(stillToCloseDeals)
   const thisMonthRealized = thisMonthClosedPaid + thisMonthClosedUnpaid
   const thisMonthProgress = thisMonthProjected > 0 ? Math.min(100, (thisMonthRealized / thisMonthProjected) * 100) : 0
   const thisMonthLabel = format(new Date(), 'MMMM yyyy')
+  const projectedCount = thisMonthDeals.length
+  const closedPaidCount = closedPaidDeals.length
+  const closedUnpaidCount = closedUnpaidDeals.length
+  const stillToCloseCount = stillToCloseDeals.length
+  const realizedCount = closedPaidCount + closedUnpaidCount
+  const dealLabel = (n) => `${n} ${n === 1 ? 'deal' : 'deals'}`
 
   const closedDeals = deals.filter(d => d.status === 'closed')
   const outstandingFees = closedDeals.filter(d => !d.tc_paid).reduce((sum, d) => sum + (Number(d.tc_fee) || 0), 0)
@@ -152,6 +161,7 @@ export default function Dashboard() {
               <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Projected</span>
             </div>
             <div className="text-xl font-bold text-gray-900">{formatCurrency(thisMonthProjected)}</div>
+            <div className="text-xs text-gray-500 mt-0.5">{dealLabel(projectedCount)}</div>
           </div>
           <div className="rounded-lg border border-green-200 bg-green-50 p-3">
             <div className="flex items-center gap-1.5 mb-1">
@@ -159,6 +169,7 @@ export default function Dashboard() {
               <span className="text-xs font-medium text-green-700 uppercase tracking-wide">Closed & Paid</span>
             </div>
             <div className="text-xl font-bold text-green-900">{formatCurrency(thisMonthClosedPaid)}</div>
+            <div className="text-xs text-green-700/70 mt-0.5">{dealLabel(closedPaidCount)}</div>
           </div>
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
             <div className="flex items-center gap-1.5 mb-1">
@@ -166,6 +177,7 @@ export default function Dashboard() {
               <span className="text-xs font-medium text-amber-700 uppercase tracking-wide">Awaiting Payment</span>
             </div>
             <div className="text-xl font-bold text-amber-900">{formatCurrency(thisMonthClosedUnpaid)}</div>
+            <div className="text-xs text-amber-700/70 mt-0.5">{dealLabel(closedUnpaidCount)}</div>
           </div>
           <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
             <div className="flex items-center gap-1.5 mb-1">
@@ -173,12 +185,16 @@ export default function Dashboard() {
               <span className="text-xs font-medium text-indigo-700 uppercase tracking-wide">Still to Close</span>
             </div>
             <div className="text-xl font-bold text-indigo-900">{formatCurrency(thisMonthStillToClose)}</div>
+            <div className="text-xs text-indigo-700/70 mt-0.5">{dealLabel(stillToCloseCount)}</div>
           </div>
         </div>
         <div className="mt-4">
-          <div className="flex items-center justify-between text-xs text-gray-500 mb-1.5">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-0.5 text-xs text-gray-500 mb-1.5">
             <span>{Math.round(thisMonthProgress)}% of projected has closed</span>
-            <span>{formatCurrency(thisMonthRealized)} / {formatCurrency(thisMonthProjected)}</span>
+            <span>
+              {formatCurrency(thisMonthRealized)} / {formatCurrency(thisMonthProjected)}
+              <span className="text-gray-400"> · {realizedCount} of {projectedCount} {projectedCount === 1 ? 'deal' : 'deals'}</span>
+            </span>
           </div>
           <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
             <div className="h-full flex">
