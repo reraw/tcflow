@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
-import { useDeals, useReminderDismissals, useTasks, useAgents } from '../hooks/useSupabase'
-import { formatCurrency, formatShortDate, formatDate, generateReminders, REMINDER_COLORS, labelForReminderKey, colorForReminderKey } from '../lib/helpers'
+import { useDeals, useReminderDismissals, useTasks, useAgents, useAllPayments } from '../hooks/useSupabase'
+import { formatCurrency, formatShortDate, formatDate, generateReminders, REMINDER_COLORS, labelForReminderKey, colorForReminderKey, paymentStateFor } from '../lib/helpers'
 import { TrendingUp, Home, XCircle, CheckCircle, DollarSign, Clock, BarChart3, Calendar, Plus, Trash2, Search, X } from 'lucide-react'
 import { format, addMonths, parseISO, startOfMonth, endOfMonth, startOfDay, isWithinInterval } from 'date-fns'
 import DealDetailModal from '../components/deals/DealDetailModal'
@@ -17,6 +17,7 @@ export default function Dashboard() {
   const { updateDeal } = useDeals()
   const { tasks, createTask, toggleTask } = useTasks()
   const { agents } = useAgents()
+  const { payments: allPayments } = useAllPayments()
 
   // Inline date editing for overdue close of escrow
   const [editingDateId, setEditingDateId] = useState(null)
@@ -60,32 +61,75 @@ export default function Dashboard() {
   const closedYTD = deals.filter(d => d.status === 'closed' && d.close_date && new Date(d.close_date).getFullYear() === currentYear)
   const collected = closedYTD.reduce((sum, d) => sum + (d.tc_paid ? (Number(d.tc_fee) || 0) : 0), 0)
 
-  // Current-Month revenue panel
+  // Current-Month revenue panel — now payment-aware.
+  //   Projected        = Σ tc_fee for deals closing this month (excl. cancelled)
+  //   Closed & Paid $  = Σ payments RECEIVED this month (actual cash in)
+  //   Closed & Paid #  = count of deals this month that are fully paid
+  //   Awaiting $       = Σ outstanding (tc_fee - received) for deals CLOSED this month
+  //   Awaiting #       = count of closed-this-month deals with outstanding balance
+  //   Still to Close   = deals this month not yet closed (count + Σ tc_fee)
   const thisMonthStart = startOfMonth(new Date())
   const thisMonthEnd = endOfMonth(new Date())
+  const thisMonthLabel = format(new Date(), 'MMMM yyyy')
+  const thisMonthKey = format(new Date(), 'yyyy-MM')
+
   const dealInThisMonth = (d) => {
     if (!d.close_date) return false
-    const cd = parseISO(d.close_date)
-    return isWithinInterval(cd, { start: thisMonthStart, end: thisMonthEnd })
+    return isWithinInterval(parseISO(d.close_date), { start: thisMonthStart, end: thisMonthEnd })
   }
   const thisMonthDeals = deals.filter(d => d.status !== 'cancelled' && dealInThisMonth(d))
+
+  const paymentsByDeal = useMemo(() => {
+    const m = {}
+    allPayments.forEach(p => { (m[p.deal_id] = m[p.deal_id] || []).push(p) })
+    return m
+  }, [allPayments])
+
+  // Payments RECEIVED this month — regardless of which deal (cash-in view).
+  const paymentsThisMonth = useMemo(() =>
+    allPayments.filter(p => p.payment_date >= format(thisMonthStart, 'yyyy-MM-dd') && p.payment_date <= format(thisMonthEnd, 'yyyy-MM-dd'))
+  , [allPayments, thisMonthKey])
+
   const sumFee = (arr) => arr.reduce((s, d) => s + (Number(d.tc_fee) || 0), 0)
-  const closedPaidDeals = thisMonthDeals.filter(d => d.status === 'closed' && d.tc_paid)
-  const closedUnpaidDeals = thisMonthDeals.filter(d => d.status === 'closed' && !d.tc_paid)
   const stillToCloseDeals = thisMonthDeals.filter(d => d.status !== 'closed')
+  const closedThisMonth = thisMonthDeals.filter(d => d.status === 'closed')
+  const fullyPaidClosedThisMonth = closedThisMonth.filter(d => paymentStateFor(d, paymentsByDeal[d.id] || []) === 'paid')
+  const unpaidClosedThisMonth = closedThisMonth.filter(d => {
+    const s = paymentStateFor(d, paymentsByDeal[d.id] || [])
+    return s === 'partial' || s === 'awaiting'
+  })
+
   const thisMonthProjected = sumFee(thisMonthDeals)
-  const thisMonthClosedPaid = sumFee(closedPaidDeals)
-  const thisMonthClosedUnpaid = sumFee(closedUnpaidDeals)
+  const thisMonthClosedPaid = paymentsThisMonth.reduce((s, p) => s + Number(p.amount || 0), 0)
+  const thisMonthClosedUnpaid = unpaidClosedThisMonth.reduce((s, d) => {
+    const received = (paymentsByDeal[d.id] || []).reduce((a, p) => a + Number(p.amount || 0), 0)
+    return s + Math.max(0, Number(d.tc_fee || 0) - received)
+  }, 0)
   const thisMonthStillToClose = sumFee(stillToCloseDeals)
   const thisMonthRealized = thisMonthClosedPaid + thisMonthClosedUnpaid
   const thisMonthProgress = thisMonthProjected > 0 ? Math.min(100, (thisMonthRealized / thisMonthProjected) * 100) : 0
-  const thisMonthLabel = format(new Date(), 'MMMM yyyy')
+
   const projectedCount = thisMonthDeals.length
-  const closedPaidCount = closedPaidDeals.length
-  const closedUnpaidCount = closedUnpaidDeals.length
+  const closedPaidCount = fullyPaidClosedThisMonth.length
+  const closedUnpaidCount = unpaidClosedThisMonth.length
   const stillToCloseCount = stillToCloseDeals.length
   const realizedCount = closedPaidCount + closedUnpaidCount
   const dealLabel = (n) => `${n} ${n === 1 ? 'deal' : 'deals'}`
+
+  // Click handlers for clickable cards — navigate to /deals with URL filters.
+  const goToMonthFilter = (paid_status) => {
+    const params = new URLSearchParams()
+    params.set('month', thisMonthKey)
+    if (paid_status) params.set('paid_status', paid_status)
+    navigate(`/deals?${params.toString()}`)
+  }
+  const goToStillToClose = () => {
+    const params = new URLSearchParams({ month: thisMonthKey })
+    // Still-to-close = month + not closed. We don't have a "not closed" status filter;
+    // the Month filter already excludes cancelled, so we can land on All tab and the
+    // user will see both Listing + Under Contract. Good enough.
+    navigate(`/deals?${params.toString()}`)
+  }
 
   const closedDeals = deals.filter(d => d.status === 'closed')
   const outstandingFees = closedDeals.filter(d => !d.tc_paid).reduce((sum, d) => sum + (Number(d.tc_fee) || 0), 0)
@@ -257,38 +301,38 @@ export default function Dashboard() {
           <h3 className="text-lg font-semibold text-gray-900">This Month — {thisMonthLabel}</h3>
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+          <button onClick={() => goToMonthFilter(null)} className="text-left rounded-lg border border-gray-200 bg-gray-50 hover:bg-gray-100 p-3 transition-colors cursor-pointer">
             <div className="flex items-center gap-1.5 mb-1">
               <BarChart3 size={14} className="text-indigo-500" />
               <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Projected</span>
             </div>
             <div className="text-xl font-bold text-gray-900">{formatCurrency(thisMonthProjected)}</div>
             <div className="text-xs text-gray-500 mt-0.5">{dealLabel(projectedCount)}</div>
-          </div>
-          <div className="rounded-lg border border-green-200 bg-green-50 p-3">
+          </button>
+          <button onClick={() => goToMonthFilter('paid')} className="text-left rounded-lg border border-green-200 bg-green-50 hover:bg-green-100 p-3 transition-colors cursor-pointer">
             <div className="flex items-center gap-1.5 mb-1">
               <CheckCircle size={14} className="text-green-600" />
               <span className="text-xs font-medium text-green-700 uppercase tracking-wide">Closed & Paid</span>
             </div>
             <div className="text-xl font-bold text-green-900">{formatCurrency(thisMonthClosedPaid)}</div>
-            <div className="text-xs text-green-700/70 mt-0.5">{dealLabel(closedPaidCount)}</div>
-          </div>
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <div className="text-xs text-green-700/70 mt-0.5">{dealLabel(closedPaidCount)} fully paid</div>
+          </button>
+          <button onClick={() => goToMonthFilter('awaiting')} className="text-left rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 p-3 transition-colors cursor-pointer">
             <div className="flex items-center gap-1.5 mb-1">
               <Clock size={14} className="text-amber-600" />
               <span className="text-xs font-medium text-amber-700 uppercase tracking-wide">Awaiting Payment</span>
             </div>
             <div className="text-xl font-bold text-amber-900">{formatCurrency(thisMonthClosedUnpaid)}</div>
-            <div className="text-xs text-amber-700/70 mt-0.5">{dealLabel(closedUnpaidCount)}</div>
-          </div>
-          <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+            <div className="text-xs text-amber-700/70 mt-0.5">{dealLabel(closedUnpaidCount)} outstanding</div>
+          </button>
+          <button onClick={goToStillToClose} className="text-left rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 p-3 transition-colors cursor-pointer">
             <div className="flex items-center gap-1.5 mb-1">
               <TrendingUp size={14} className="text-indigo-600" />
               <span className="text-xs font-medium text-indigo-700 uppercase tracking-wide">Still to Close</span>
             </div>
             <div className="text-xl font-bold text-indigo-900">{formatCurrency(thisMonthStillToClose)}</div>
             <div className="text-xs text-indigo-700/70 mt-0.5">{dealLabel(stillToCloseCount)}</div>
-          </div>
+          </button>
         </div>
         <div className="mt-4">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-0.5 text-xs text-gray-500 mb-1.5">

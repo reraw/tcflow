@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { useAgents } from '../hooks/useSupabase'
+import { useAgents, findOrCreateVendor } from '../hooks/useSupabase'
+import { supabase } from '../lib/supabase'
 import Modal from '../components/ui/Modal'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import { formatCurrency, VENDOR_TYPES } from '../lib/helpers'
@@ -274,6 +275,11 @@ function AgentDetailModal({ agent, open, onClose, onUpdate, addVendor, updateVen
     } else {
       await addVendor(agent.id, { vendor_type: 'NHD', company: nhdForm.company || null, notes: nhdForm.website || null })
     }
+    // Auto-create vendor card + preferred link (silent).
+    if (nhdForm.company) {
+      const v = await findOrCreateVendor({ name: nhdForm.company, vendor_type: 'NHD', notes: nhdForm.website || null })
+      if (v) await supabase.from('agent_preferred_vendors').upsert({ agent_id: agent.id, vendor_id: v.id, vendor_type: 'NHD' }, { onConflict: 'agent_id,vendor_id,vendor_type' })
+    }
     setNhdDirty(false)
   }
 
@@ -283,6 +289,23 @@ function AgentDetailModal({ agent, open, onClose, onUpdate, addVendor, updateVen
   const handleAddVendor = async () => {
     const type = newVendor.vendor_type === '__custom__' ? customVendorType : newVendor.vendor_type
     await addVendor(agent.id, { ...newVendor, vendor_type: type })
+    // Auto-create normalized vendor + preferred link (silent).
+    const vendorName = newVendor.company || newVendor.name
+    if (vendorName) {
+      const v = await findOrCreateVendor({
+        name: vendorName,
+        vendor_type: type || null,
+        phone: newVendor.phone || null,
+        email: newVendor.email || null,
+        notes: newVendor.notes || null,
+      })
+      if (v && type) {
+        await supabase.from('agent_preferred_vendors').upsert(
+          { agent_id: agent.id, vendor_id: v.id, vendor_type: type },
+          { onConflict: 'agent_id,vendor_id,vendor_type' }
+        )
+      }
+    }
     setNewVendor({ vendor_type: '', company: '', name: '', phone: '', email: '', notes: '' })
     setCustomVendorType('')
     setShowAddVendor(false)

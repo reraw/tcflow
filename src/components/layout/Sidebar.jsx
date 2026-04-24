@@ -1,12 +1,13 @@
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../../lib/AuthContext'
-import { LayoutDashboard, FileText, Users, BarChart3, Calendar, X, LogOut } from 'lucide-react'
+import { LayoutDashboard, FileText, Users, BarChart3, Calendar, X, LogOut, Briefcase } from 'lucide-react'
 
 const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/deals', label: 'Deals', icon: FileText },
   { to: '/calendar', label: 'Calendar', icon: Calendar },
   { to: '/agents', label: 'Agent Profiles', icon: Users },
+  { to: '/vendors', label: 'Vendors', icon: Briefcase },
   { to: '/reports', label: 'Reports', icon: BarChart3 },
 ]
 

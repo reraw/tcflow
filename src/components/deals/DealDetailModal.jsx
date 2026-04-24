@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react'
 import Modal from '../ui/Modal'
 import CurrencyInput from '../ui/CurrencyInput'
-import { useContacts, useDealHistory, useCustomDates, useTasks } from '../../hooks/useSupabase'
-import { formatDate, formatCurrency, daysUntil, getStatusLabel, getRepLabel } from '../../lib/helpers'
-import { AlertTriangle, Plus, Trash2 } from 'lucide-react'
+import ConfirmDialog from '../ui/ConfirmDialog'
+import { useContacts, useDealHistory, useCustomDates, useTasks, usePayments, markPaidInFull } from '../../hooks/useSupabase'
+import {
+  formatDate, formatCurrency, daysUntil, getStatusLabel, getRepLabel,
+  paymentStateFor, paymentSummary, PAID_BY_OPTIONS, PAYMENT_STATE_LABELS, PAYMENT_STATE_STYLES,
+} from '../../lib/helpers'
+import { AlertTriangle, Plus, Trash2, Pencil, Check, X } from 'lucide-react'
 
 const TABS = ['Details', 'Timeline', 'Contacts', 'Financials', 'Tasks', 'History']
 const CONTACT_ROLES = [
@@ -13,7 +17,7 @@ const CONTACT_ROLES = [
   { value: 'escrow', label: 'Escrow' },
 ]
 
-export default function DealDetailModal({ deal, open, onClose, onUpdate, agentName, coAgentName }) {
+export default function DealDetailModal({ deal, open, onClose, onUpdate, onPaymentsChanged, agentName, coAgentName }) {
   const [tab, setTab] = useState('Details')
   const { contacts, extraContacts, upsertContact, addExtraContact, deleteExtraContact } = useContacts(deal?.id)
   const { history, addEntry } = useDealHistory(deal?.id)
@@ -47,7 +51,7 @@ export default function DealDetailModal({ deal, open, onClose, onUpdate, agentNa
       {tab === 'Details' && <DetailsTab deal={deal} onUpdate={onUpdate} />}
       {tab === 'Timeline' && <TimelineTab deal={deal} customDates={customDates} addCustomDate={addCustomDate} deleteCustomDate={deleteCustomDate} />}
       {tab === 'Contacts' && <ContactsTab contacts={contacts} extraContacts={extraContacts} upsertContact={upsertContact} addExtraContact={addExtraContact} deleteExtraContact={deleteExtraContact} />}
-      {tab === 'Financials' && <FinancialsTab deal={deal} onUpdate={onUpdate} />}
+      {tab === 'Financials' && <FinancialsTab deal={deal} onUpdate={onUpdate} onPaymentsChanged={onPaymentsChanged} />}
       {tab === 'Tasks' && <TasksTab dealId={deal.id} />}
       {tab === 'History' && <HistoryTab history={history} addEntry={addEntry} />}
     </Modal>
@@ -362,7 +366,7 @@ function ContactsTab({ contacts, extraContacts, upsertContact, addExtraContact, 
   )
 }
 
-function FinancialsTab({ deal, onUpdate }) {
+function FinancialsTab({ deal, onUpdate, onPaymentsChanged }) {
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState({})
   const [buyerType, setBuyerType] = useState(deal.commission_buyer_type || 'percent')
@@ -370,7 +374,7 @@ function FinancialsTab({ deal, onUpdate }) {
   const [commissionType, setCommissionType] = useState(deal.commission_type || 'percentage')
 
   useEffect(() => {
-    setForm({ price: deal.price || '', commission_buyer: deal.commission_buyer || '', commission_seller: deal.commission_seller || '', commission_flat_amount: deal.commission_flat_amount || '', concessions: deal.concessions || '', tc_fee: deal.tc_fee || '', tc_paid: deal.tc_paid || false, tc_paid_by: deal.tc_paid_by || '' })
+    setForm({ price: deal.price || '', commission_buyer: deal.commission_buyer || '', commission_seller: deal.commission_seller || '', commission_flat_amount: deal.commission_flat_amount || '', concessions: deal.concessions || '', tc_fee: deal.tc_fee || '', tc_paid_by: deal.tc_paid_by || '' })
     setBuyerType(deal.commission_buyer_type || 'percent')
     setSellerType(deal.commission_seller_type || 'percent')
     setCommissionType(deal.commission_type || 'percentage')
@@ -491,19 +495,227 @@ function FinancialsTab({ deal, onUpdate }) {
           {editing ? <CurrencyInput className={inputClass} value={form.tc_fee || ''} onChange={e => setForm({ ...form, tc_fee: e.target.value })} /> : <p className="text-sm text-gray-900 mt-0.5">{formatCurrency(deal.tc_fee)}</p>}
         </div>
 
-        {/* TC Paid By */}
+      </div>
+
+      <PaymentsSection deal={deal} onPaymentsChanged={onPaymentsChanged} />
+    </div>
+  )
+}
+
+function PaymentsSection({ deal, onPaymentsChanged }) {
+  const { payments, addPayment, updatePayment, deletePayment, clearAllPayments, fetchPayments } = usePayments(deal.id)
+  const [showAdd, setShowAdd] = useState(false)
+  const [form, setForm] = useState({ amount: '', paid_by: 'Agent', paid_by_other: '', payment_date: new Date().toISOString().slice(0, 10) })
+  const [editingId, setEditingId] = useState(null)
+  const [editForm, setEditForm] = useState({})
+  const [confirmUnpaid, setConfirmUnpaid] = useState(false)
+  const [deleteTargetId, setDeleteTargetId] = useState(null)
+
+  const summary = paymentSummary(deal, payments)
+  const styles = PAYMENT_STATE_STYLES[summary.state]
+
+  const refreshExternal = () => { if (onPaymentsChanged) onPaymentsChanged() }
+
+  const resetForm = () => setForm({ amount: '', paid_by: 'Agent', paid_by_other: '', payment_date: new Date().toISOString().slice(0, 10) })
+
+  const handleAdd = async () => {
+    if (!form.amount || Number(form.amount) <= 0) return
+    await addPayment({
+      amount: form.amount,
+      paid_by: form.paid_by,
+      paid_by_other: form.paid_by === 'Other' ? form.paid_by_other : null,
+      payment_date: form.payment_date,
+    })
+    resetForm()
+    setShowAdd(false)
+    refreshExternal()
+  }
+
+  const handleMarkFull = async () => {
+    await markPaidInFull(deal.id, deal.tc_fee)
+    await fetchPayments()
+    refreshExternal()
+  }
+
+  const handleMarkUnpaid = async () => {
+    await clearAllPayments()
+    setConfirmUnpaid(false)
+    refreshExternal()
+  }
+
+  const startEdit = (p) => {
+    setEditingId(p.id)
+    setEditForm({ amount: p.amount, paid_by: p.paid_by, paid_by_other: p.paid_by_other || '', payment_date: p.payment_date })
+  }
+
+  const saveEdit = async () => {
+    await updatePayment(editingId, {
+      amount: Number(editForm.amount),
+      paid_by: editForm.paid_by,
+      paid_by_other: editForm.paid_by === 'Other' ? editForm.paid_by_other : null,
+      payment_date: editForm.payment_date,
+    })
+    setEditingId(null)
+    refreshExternal()
+  }
+
+  const handleDelete = async () => {
+    if (deleteTargetId) {
+      await deletePayment(deleteTargetId)
+      setDeleteTargetId(null)
+      refreshExternal()
+    }
+  }
+
+  const inputClass = 'w-full px-2 py-1 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-indigo-500 outline-none'
+
+  return (
+    <div className="mt-4 pt-4 border-t border-gray-200">
+      <div className="flex items-center justify-between mb-3">
         <div>
-          <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">TC Paid By</label>
-          {editing ? <input type="text" className={inputClass} value={form.tc_paid_by || ''} onChange={e => setForm({ ...form, tc_paid_by: e.target.value })} /> : <p className="text-sm text-gray-900 mt-0.5">{deal.tc_paid_by || '—'}</p>}
+          <h4 className="text-sm font-semibold text-gray-800">Payments</h4>
+          <p className={`text-xs ${styles.text} mt-0.5`}>
+            <span className={`inline-block w-2 h-2 rounded-full ${styles.dot} mr-1.5 align-middle`} />
+            {PAYMENT_STATE_LABELS[summary.state]}
+            {summary.fee > 0 && (
+              <span className="text-gray-500 ml-1.5">
+                · Received {formatCurrency(summary.received)} of {formatCurrency(summary.fee)}
+                {summary.outstanding > 0 && ` · ${formatCurrency(summary.outstanding)} outstanding`}
+              </span>
+            )}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          {summary.state !== 'paid' && deal.tc_fee > 0 && (
+            <button
+              onClick={handleMarkFull}
+              className="text-xs font-medium text-white bg-green-600 hover:bg-green-700 px-2.5 py-1 rounded"
+            >
+              Mark Paid in Full
+            </button>
+          )}
+          <button
+            onClick={() => setShowAdd(true)}
+            className="inline-flex items-center gap-1 text-xs text-indigo-primary hover:text-indigo-700 font-medium"
+          >
+            <Plus size={14} /> Add Payment
+          </button>
         </div>
       </div>
-      <div className="flex items-center gap-2">
-        {editing ? (
-          <><input type="checkbox" checked={form.tc_paid} onChange={e => setForm({ ...form, tc_paid: e.target.checked })} className="h-4 w-4 text-indigo-600 rounded border-gray-300" /><span className="text-sm text-gray-700">TC Fee Paid</span></>
-        ) : (
-          <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-medium ${deal.tc_paid ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>{deal.tc_paid ? 'Paid' : 'Unpaid'}</div>
-        )}
-      </div>
+
+      {showAdd && (
+        <div className="border border-gray-200 rounded-lg p-3 mb-3 space-y-2 bg-gray-50">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="col-span-2 sm:col-span-1">
+              <label className="text-xs text-gray-500">Amount</label>
+              <CurrencyInput className={inputClass} value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500">Paid by</label>
+              <select className={inputClass} value={form.paid_by} onChange={e => setForm({ ...form, paid_by: e.target.value })}>
+                {PAID_BY_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+            {form.paid_by === 'Other' && (
+              <div>
+                <label className="text-xs text-gray-500">Specify</label>
+                <input className={inputClass} value={form.paid_by_other} onChange={e => setForm({ ...form, paid_by_other: e.target.value })} />
+              </div>
+            )}
+            <div>
+              <label className="text-xs text-gray-500">Date</label>
+              <input type="date" className={inputClass} value={form.payment_date} onChange={e => setForm({ ...form, payment_date: e.target.value })} />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button onClick={() => { setShowAdd(false); resetForm() }} className="text-xs text-gray-500">Cancel</button>
+            <button onClick={handleAdd} className="text-xs text-white bg-indigo-primary px-3 py-1.5 rounded">Add</button>
+          </div>
+        </div>
+      )}
+
+      {payments.length === 0 ? (
+        <p className="text-sm text-gray-400 text-center py-3">No payments recorded</p>
+      ) : (
+        <div className="space-y-2">
+          {payments.map(p => {
+            const isEditing = editingId === p.id
+            return (
+              <div key={p.id} className={`flex items-center gap-3 px-3 py-2 rounded-lg border ${isEditing ? 'bg-indigo-50/40 border-indigo-200' : 'bg-gray-50 border-gray-200'}`}>
+                {isEditing ? (
+                  <>
+                    <CurrencyInput
+                      className="w-28 px-2 py-1 border border-gray-300 rounded text-sm"
+                      value={editForm.amount}
+                      onChange={e => setEditForm({ ...editForm, amount: e.target.value })}
+                    />
+                    <select
+                      className="flex-1 max-w-[120px] px-2 py-1 border border-gray-300 rounded text-sm"
+                      value={editForm.paid_by}
+                      onChange={e => setEditForm({ ...editForm, paid_by: e.target.value })}
+                    >
+                      {PAID_BY_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                    {editForm.paid_by === 'Other' && (
+                      <input
+                        className="flex-1 px-2 py-1 border border-gray-300 rounded text-sm"
+                        placeholder="Specify"
+                        value={editForm.paid_by_other}
+                        onChange={e => setEditForm({ ...editForm, paid_by_other: e.target.value })}
+                      />
+                    )}
+                    <input
+                      type="date"
+                      className="px-2 py-1 border border-gray-300 rounded text-sm"
+                      value={editForm.payment_date}
+                      onChange={e => setEditForm({ ...editForm, payment_date: e.target.value })}
+                    />
+                    <button onClick={saveEdit} className="p-1 text-green-600 hover:bg-green-100 rounded" title="Save"><Check size={14} /></button>
+                    <button onClick={() => setEditingId(null)} className="p-1 text-gray-400 hover:bg-gray-100 rounded" title="Cancel"><X size={14} /></button>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex-1 min-w-0 text-sm">
+                      <span className="font-medium text-gray-900">{formatCurrency(p.amount)}</span>
+                      <span className="text-gray-500"> · {p.paid_by}{p.paid_by === 'Other' && p.paid_by_other ? ` (${p.paid_by_other})` : ''}</span>
+                      <span className="text-gray-400"> · {formatDate(p.payment_date)}</span>
+                    </div>
+                    <button onClick={() => startEdit(p)} className="p-1 text-gray-400 hover:text-indigo-600" title="Edit"><Pencil size={13} /></button>
+                    <button onClick={() => setDeleteTargetId(p.id)} className="p-1 text-gray-400 hover:text-red-500" title="Delete"><Trash2 size={13} /></button>
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {payments.length > 0 && (
+        <div className="mt-3">
+          <button
+            onClick={() => setConfirmUnpaid(true)}
+            className="text-xs text-amber-700 hover:text-amber-900 font-medium"
+          >
+            Mark Unpaid (delete all)
+          </button>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={confirmUnpaid}
+        onConfirm={handleMarkUnpaid}
+        onCancel={() => setConfirmUnpaid(false)}
+        title="Mark Unpaid"
+        message={`This deletes all ${payments.length} payment${payments.length === 1 ? '' : 's'} for this deal (${formatCurrency(summary.received)}). Continue?`}
+      />
+
+      <ConfirmDialog
+        open={!!deleteTargetId}
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteTargetId(null)}
+        title="Delete payment"
+        message="Remove this payment from the deal?"
+      />
     </div>
   )
 }

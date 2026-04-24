@@ -194,9 +194,12 @@ export default function DealForm({ onSubmit, onCancel, initialData, initialCusto
     ;['acceptance_date', 'close_date', 'possession_date', 'disclosures_sent'].forEach(f => {
       if (cleaned[f] === '') cleaned[f] = null
     })
-    ;['other_tc_name', 'other_tc_phone', 'other_tc_email', 'other_agent_name', 'other_agent_phone', 'other_agent_email', 'tc_paid_by'].forEach(f => {
+    ;['other_tc_name', 'other_tc_phone', 'other_tc_email', 'other_agent_name', 'other_agent_phone', 'other_agent_email'].forEach(f => {
       if (cleaned[f] === '') cleaned[f] = null
     })
+    // Strip legacy paid fields — payment state now derives from deal_payments.
+    delete cleaned.tc_paid
+    delete cleaned.tc_paid_by
     cleaned.referral_percentage = cleaned.referral_percentage === '' ? null : Number(cleaned.referral_percentage)
     if (!cleaned.is_referral) { cleaned.referral_agreement = false; cleaned.referral_percentage = null }
     if (!cleaned.referral_agreement) { cleaned.referral_percentage = null }
@@ -319,8 +322,7 @@ export default function DealForm({ onSubmit, onCancel, initialData, initialCusto
 
         {/* ── FINANCIALS ── */}
         <SectionHeader>Financials</SectionHeader>
-        <div><label className={lbl}>TC Fee</label><CurrencyInput className={inp} value={form.tc_fee} onChange={set('tc_fee')} /></div>
-        <div><label className={lbl}>TC Paid By</label><input className={inp} value={form.tc_paid_by} onChange={set('tc_paid_by')} /></div>
+        <div className="sm:col-span-2"><label className={lbl}>TC Fee</label><CurrencyInput className={inp} value={form.tc_fee} onChange={set('tc_fee')} /></div>
 
         <div className="sm:col-span-2">
           <label className={lbl}>Commission Type</label>
@@ -364,10 +366,9 @@ export default function DealForm({ onSubmit, onCancel, initialData, initialCusto
           </>
         )}
 
-        <div><label className={lbl}>Concessions</label><CurrencyInput className={inp} value={form.concessions} onChange={set('concessions')} /></div>
-        <div className="flex items-center gap-2 pt-5">
-          <input type="checkbox" id="tc_paid" checked={form.tc_paid} onChange={set('tc_paid')} className="h-4 w-4 text-indigo-600 rounded border-gray-300" />
-          <label htmlFor="tc_paid" className="text-sm text-gray-700">TC Fee Paid</label>
+        <div className="sm:col-span-2"><label className={lbl}>Concessions</label><CurrencyInput className={inp} value={form.concessions} onChange={set('concessions')} /></div>
+        <div className="sm:col-span-2 text-xs text-gray-400 italic">
+          Payment tracking is in the deal's Financials tab. Save this deal first, then record payments.
         </div>
 
         {/* ── KEY DATES ── */}

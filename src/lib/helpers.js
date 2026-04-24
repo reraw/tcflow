@@ -53,11 +53,61 @@ export function getRepLabel(rep) {
   return labels[rep] || rep || '—'
 }
 
-export const VENDOR_TYPES = ['Escrow', 'Title', 'Home Inspector', 'Termite', 'Home Warranty', 'Lender', 'Stager', 'Photographer', 'Notary', 'Other']
+export const VENDOR_TYPES = ['Escrow', 'Title', 'Home Inspector', 'Termite', 'Home Warranty', 'Lender', 'NHD', 'Stager', 'Photographer', 'Notary', 'Other']
+
+// ─────────────────────────────────────────────────────────────────────────
+// Payment state — derived from deal_payments rows + deal.tc_fee + status
+// ─────────────────────────────────────────────────────────────────────────
+
+// Returns one of: 'paid' | 'partial' | 'awaiting' | 'not_due'
+export function paymentStateFor(deal, paymentsForDeal = []) {
+  const fee = Number(deal?.tc_fee) || 0
+  const received = paymentsForDeal.reduce((s, p) => s + (Number(p.amount) || 0), 0)
+  const isClosed = deal?.status === 'closed'
+  if (fee > 0 && received >= fee) return 'paid'
+  if (received > 0 && received < fee) return 'partial'
+  if (isClosed && received === 0) return 'awaiting'
+  return 'not_due'
+}
+
+export function paymentSummary(deal, paymentsForDeal = []) {
+  const fee = Number(deal?.tc_fee) || 0
+  const received = paymentsForDeal.reduce((s, p) => s + (Number(p.amount) || 0), 0)
+  const outstanding = Math.max(0, fee - received)
+  const latestDate = paymentsForDeal.reduce((acc, p) => (!acc || p.payment_date > acc) ? p.payment_date : acc, null)
+  return {
+    fee,
+    received,
+    outstanding,
+    latestDate,
+    state: paymentStateFor(deal, paymentsForDeal),
+  }
+}
+
+export const PAYMENT_STATE_LABELS = {
+  paid:     'Paid in full',
+  partial:  'Partial',
+  awaiting: 'Awaiting payment',
+  not_due:  'Not yet due',
+}
+
+export const PAYMENT_STATE_STYLES = {
+  paid:     { dot: 'bg-green-500',  text: 'text-green-700',  bg: 'bg-green-50 border-green-200' },
+  partial:  { dot: 'bg-blue-500',   text: 'text-blue-700',   bg: 'bg-blue-50 border-blue-200' },
+  awaiting: { dot: 'bg-amber-500',  text: 'text-amber-700',  bg: 'bg-amber-50 border-amber-200' },
+  not_due:  { dot: 'bg-gray-300',   text: 'text-gray-500',   bg: 'bg-gray-50 border-gray-200' },
+}
+
+export const PAID_BY_OPTIONS = ['Agent', 'Co-Agent', 'Seller', 'Buyer', 'Other']
 
 export const DEFAULT_CONTINGENCIES = ['Loan', 'Appraisal', 'Inspection', 'Disclosures', 'HOA', 'Insurability', 'Prelim']
 
 export function generateReminders(deals, allCustomDates = [], options = {}) {
+  // `noDateLimit` removes the 14-day window (used by search).
+  // `includeClosed` forces inclusion of closed/cancelled deals in search
+  // results. By default we now INCLUDE closed deals (their open reminders
+  // stay visible in Active until manually checked off); cancelled deals
+  // are skipped unless explicitly included.
   const { noDateLimit = false, includeClosed = false } = options
   const today = new Date()
   today.setHours(0, 0, 0, 0)
@@ -65,7 +115,7 @@ export function generateReminders(deals, allCustomDates = [], options = {}) {
   const reminders = []
 
   deals.forEach(deal => {
-    if (!includeClosed && (deal.status === 'closed' || deal.status === 'cancelled')) return
+    if (deal.status === 'cancelled' && !includeClosed) return
     if (!deal.close_date) return
 
     const closeDate = parseISO(deal.close_date)

@@ -4,6 +4,7 @@ import AppLayout from './components/layout/AppLayout'
 import Dashboard from './pages/Dashboard'
 import Deals from './pages/Deals'
 import AgentProfiles from './pages/AgentProfiles'
+import Vendors from './pages/Vendors'
 import Reports from './pages/Reports'
 import CalendarView from './pages/CalendarView'
 import Login from './pages/Login'
@@ -26,6 +27,7 @@ export default function App() {
         <Route path="/deals" element={<Deals />} />
         <Route path="/calendar" element={<CalendarView />} />
         <Route path="/agents" element={<AgentProfiles />} />
+        <Route path="/vendors" element={<Vendors />} />
         <Route path="/reports" element={<Reports />} />
       </Route>
     </Routes>
