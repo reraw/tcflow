@@ -27,6 +27,15 @@ const PAID_STATUS_OPTIONS = [
   { key: 'not_due',  label: 'Not yet due' },
 ]
 
+// Compound filter values used only by Dashboard card navigation —
+// not surfaced in the manual filter dropdown.
+//   outstanding  = awaiting OR partial (any unpaid balance after close)
+//   has_payments = paid OR partial (any payment received)
+const COMPOUND_PAID_FILTERS = {
+  outstanding:  { states: ['awaiting', 'partial'], label: 'Has outstanding balance' },
+  has_payments: { states: ['paid', 'partial'],     label: 'Has received payment' },
+}
+
 const SORTABLE_COLUMNS = {
   address: { key: 'address', label: 'Property' },
   status: { key: 'status', label: 'Status' },
@@ -116,7 +125,11 @@ export default function Deals() {
       filtered = filtered.filter(d => d.status !== 'cancelled' && d.close_date && isWithinInterval(parseISO(d.close_date), monthFilter))
     }
     if (paidFilter !== 'all') {
-      filtered = filtered.filter(d => paymentStateFor(d, paymentsByDeal[d.id] || []) === paidFilter)
+      const compound = COMPOUND_PAID_FILTERS[paidFilter]
+      filtered = filtered.filter(d => {
+        const state = paymentStateFor(d, paymentsByDeal[d.id] || [])
+        return compound ? compound.states.includes(state) : state === paidFilter
+      })
     }
     if (search) {
       const q = search.toLowerCase()
@@ -172,9 +185,10 @@ export default function Deals() {
   const clearMonthFilter = () => updateParams({ month: null })
 
   const hasActiveFilterPill = !!monthFilter || paidFilter !== 'all'
+  const paidFilterLabel = COMPOUND_PAID_FILTERS[paidFilter]?.label || PAYMENT_STATE_LABELS[paidFilter]
   const filterPillDesc = [
     monthFilter && `Closing ${monthFilter.label}`,
-    paidFilter !== 'all' && PAYMENT_STATE_LABELS[paidFilter],
+    paidFilter !== 'all' && paidFilterLabel,
   ].filter(Boolean).join(' · ')
 
   const clearAllFilters = () => {

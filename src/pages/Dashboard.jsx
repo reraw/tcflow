@@ -309,7 +309,7 @@ export default function Dashboard() {
             <div className="text-xl font-bold text-gray-900">{formatCurrency(thisMonthProjected)}</div>
             <div className="text-xs text-gray-500 mt-0.5">{dealLabel(projectedCount)}</div>
           </button>
-          <button onClick={() => goToMonthFilter('paid')} className="text-left rounded-lg border border-green-200 bg-green-50 hover:bg-green-100 p-3 transition-colors cursor-pointer">
+          <button onClick={() => goToMonthFilter('has_payments')} className="text-left rounded-lg border border-green-200 bg-green-50 hover:bg-green-100 p-3 transition-colors cursor-pointer">
             <div className="flex items-center gap-1.5 mb-1">
               <CheckCircle size={14} className="text-green-600" />
               <span className="text-xs font-medium text-green-700 uppercase tracking-wide">Closed & Paid</span>
@@ -317,7 +317,7 @@ export default function Dashboard() {
             <div className="text-xl font-bold text-green-900">{formatCurrency(thisMonthClosedPaid)}</div>
             <div className="text-xs text-green-700/70 mt-0.5">{dealLabel(closedPaidCount)} fully paid</div>
           </button>
-          <button onClick={() => goToMonthFilter('awaiting')} className="text-left rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 p-3 transition-colors cursor-pointer">
+          <button onClick={() => goToMonthFilter('outstanding')} className="text-left rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 p-3 transition-colors cursor-pointer">
             <div className="flex items-center gap-1.5 mb-1">
               <Clock size={14} className="text-amber-600" />
               <span className="text-xs font-medium text-amber-700 uppercase tracking-wide">Awaiting Payment</span>
