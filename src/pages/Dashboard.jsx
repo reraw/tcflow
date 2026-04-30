@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useDeals, useReminderDismissals, useTasks, useAgents, useAllPayments } from '../hooks/useSupabase'
-import { formatCurrency, formatShortDate, formatDate, generateReminders, REMINDER_COLORS, labelForReminderKey, colorForReminderKey, paymentStateFor } from '../lib/helpers'
+import { formatCurrency, formatShortDate, formatDate, generateReminders, REMINDER_COLORS, labelForReminderKey, colorForReminderKey } from '../lib/helpers'
+import { thisMonthMetrics, businessOverviewMetrics } from '../lib/dashboardMetrics'
 import { TrendingUp, Home, XCircle, CheckCircle, DollarSign, Clock, BarChart3, Calendar, Plus, Trash2, Search, X } from 'lucide-react'
 import { format, addMonths, parseISO, startOfMonth, endOfMonth, startOfDay, isWithinInterval } from 'date-fns'
 import DealDetailModal from '../components/deals/DealDetailModal'
@@ -54,88 +55,29 @@ export default function Dashboard() {
     fetch()
   }, [])
 
-  const currentYear = new Date().getFullYear()
-  const listings = deals.filter(d => d.status === 'listing')
-  const active = deals.filter(d => d.status === 'active')
-  const cancelled = deals.filter(d => d.status === 'cancelled')
-  const closedYTD = deals.filter(d => d.status === 'closed' && d.close_date && new Date(d.close_date).getFullYear() === currentYear)
-  const collected = closedYTD.reduce((sum, d) => sum + (d.tc_paid ? (Number(d.tc_fee) || 0) : 0), 0)
+  // ALL dashboard metrics derive from the canonical helpers — no inlining.
+  // See src/lib/dashboardMetrics.js for the spec these implement.
+  const tm = useMemo(() => thisMonthMetrics(deals, allPayments), [deals, allPayments])
+  const bo = useMemo(() => businessOverviewMetrics(deals, allPayments), [deals, allPayments])
 
-  // Current-Month revenue panel — now payment-aware.
-  //   Projected        = Σ tc_fee for deals closing this month (excl. cancelled)
-  //   Closed & Paid $  = Σ payments RECEIVED this month (actual cash in)
-  //   Closed & Paid #  = count of deals this month that are fully paid
-  //   Awaiting $       = Σ outstanding (tc_fee - received) for deals CLOSED this month
-  //   Awaiting #       = count of closed-this-month deals with outstanding balance
-  //   Still to Close   = deals this month not yet closed (count + Σ tc_fee)
-  const thisMonthStart = startOfMonth(new Date())
-  const thisMonthEnd = endOfMonth(new Date())
-  const thisMonthLabel = format(new Date(), 'MMMM yyyy')
-  const thisMonthKey = format(new Date(), 'yyyy-MM')
-
-  const dealInThisMonth = (d) => {
-    if (!d.close_date) return false
-    return isWithinInterval(parseISO(d.close_date), { start: thisMonthStart, end: thisMonthEnd })
-  }
-  const thisMonthDeals = deals.filter(d => d.status !== 'cancelled' && dealInThisMonth(d))
-
-  const paymentsByDeal = useMemo(() => {
-    const m = {}
-    allPayments.forEach(p => { (m[p.deal_id] = m[p.deal_id] || []).push(p) })
-    return m
-  }, [allPayments])
-
-  // Payments RECEIVED this month — regardless of which deal (cash-in view).
-  const paymentsThisMonth = useMemo(() =>
-    allPayments.filter(p => p.payment_date >= format(thisMonthStart, 'yyyy-MM-dd') && p.payment_date <= format(thisMonthEnd, 'yyyy-MM-dd'))
-  , [allPayments, thisMonthKey])
-
-  const sumFee = (arr) => arr.reduce((s, d) => s + (Number(d.tc_fee) || 0), 0)
-  const stillToCloseDeals = thisMonthDeals.filter(d => d.status !== 'closed')
-  const closedThisMonth = thisMonthDeals.filter(d => d.status === 'closed')
-  const fullyPaidClosedThisMonth = closedThisMonth.filter(d => paymentStateFor(d, paymentsByDeal[d.id] || []) === 'paid')
-  const unpaidClosedThisMonth = closedThisMonth.filter(d => {
-    const s = paymentStateFor(d, paymentsByDeal[d.id] || [])
-    return s === 'partial' || s === 'awaiting'
-  })
-
-  const thisMonthProjected = sumFee(thisMonthDeals)
-  const thisMonthClosedPaid = paymentsThisMonth.reduce((s, p) => s + Number(p.amount || 0), 0)
-  const thisMonthClosedUnpaid = unpaidClosedThisMonth.reduce((s, d) => {
-    const received = (paymentsByDeal[d.id] || []).reduce((a, p) => a + Number(p.amount || 0), 0)
-    return s + Math.max(0, Number(d.tc_fee || 0) - received)
-  }, 0)
-  const thisMonthStillToClose = sumFee(stillToCloseDeals)
-  const thisMonthRealized = thisMonthClosedPaid + thisMonthClosedUnpaid
-  const thisMonthProgress = thisMonthProjected > 0 ? Math.min(100, (thisMonthRealized / thisMonthProjected) * 100) : 0
-
-  const projectedCount = thisMonthDeals.length
-  const closedPaidCount = fullyPaidClosedThisMonth.length
-  const closedUnpaidCount = unpaidClosedThisMonth.length
-  const stillToCloseCount = stillToCloseDeals.length
-  const realizedCount = closedPaidCount + closedUnpaidCount
   const dealLabel = (n) => `${n} ${n === 1 ? 'deal' : 'deals'}`
 
-  // Click handlers for clickable cards — navigate to /deals with URL filters.
+  // Click handlers — navigate to /deals with URL filters.
   const goToMonthFilter = (paid_status) => {
     const params = new URLSearchParams()
-    params.set('month', thisMonthKey)
+    params.set('month', tm.monthKey)
     if (paid_status) params.set('paid_status', paid_status)
     navigate(`/deals?${params.toString()}`)
   }
   const goToStillToClose = () => {
-    const params = new URLSearchParams({ month: thisMonthKey })
-    // Still-to-close = month + not closed. We don't have a "not closed" status filter;
-    // the Month filter already excludes cancelled, so we can land on All tab and the
-    // user will see both Listing + Under Contract. Good enough.
-    navigate(`/deals?${params.toString()}`)
+    // Still to close = month + not closed. We use a synthetic compound filter
+    // value so the Deals page knows to filter to non-closed deals and label
+    // the pill correctly.
+    navigate(`/deals?month=${tm.monthKey}&paid_status=not_closed`)
   }
 
-  const closedDeals = deals.filter(d => d.status === 'closed')
-  const outstandingFees = closedDeals.filter(d => !d.tc_paid).reduce((sum, d) => sum + (Number(d.tc_fee) || 0), 0)
-  const underContractProjected = active.reduce((sum, d) => sum + (Number(d.tc_fee) || 0), 0)
-  const potentialFees = listings.reduce((sum, d) => sum + (Number(d.tc_fee) || 0), 0)
-  const totalPipeline = outstandingFees + underContractProjected + potentialFees
+  // Active deals list for task dropdown (existing feature).
+  const active = deals.filter(d => d.status === 'active')
 
   const projectedMonths = []
   const now = new Date()
@@ -271,18 +213,18 @@ export default function Dashboard() {
   }
 
   const kpiTiles = [
-    { label: 'Listings', value: listings.length, icon: Home, color: 'text-blue-600 bg-blue-50', filter: 'listing' },
-    { label: 'Under Contract', value: active.length, icon: TrendingUp, color: 'text-green-600 bg-green-50', filter: 'active' },
-    { label: 'Cancelled', value: cancelled.length, icon: XCircle, color: 'text-red-600 bg-red-50', filter: 'cancelled' },
-    { label: 'Closed YTD', value: closedYTD.length, icon: CheckCircle, color: 'text-gray-600 bg-gray-100', filter: 'closed' },
-    { label: 'Collected', value: formatCurrency(collected), icon: DollarSign, color: 'text-emerald-600 bg-emerald-50' },
+    { label: 'Listings', value: bo.listingsCount, icon: Home, color: 'text-blue-600 bg-blue-50', filter: 'listing' },
+    { label: 'Under Contract', value: bo.activeCount, icon: TrendingUp, color: 'text-green-600 bg-green-50', filter: 'active' },
+    { label: 'Cancelled', value: bo.cancelledCount, icon: XCircle, color: 'text-red-600 bg-red-50', filter: 'cancelled' },
+    { label: 'Closed YTD', value: bo.closedYTDCount, icon: CheckCircle, color: 'text-gray-600 bg-gray-100', filter: 'closed' },
+    { label: 'Collected', value: formatCurrency(bo.collected), icon: DollarSign, color: 'text-emerald-600 bg-emerald-50' },
   ]
 
   const kpiRow2 = [
-    { label: 'Outstanding Fees', subtitle: 'Closed deals, payment not received', value: formatCurrency(outstandingFees), icon: Clock, color: 'text-amber-600 bg-amber-50' },
-    { label: 'Under Contract', subtitle: 'Projected TC fees from active deals', value: formatCurrency(underContractProjected), icon: TrendingUp, color: 'text-green-600 bg-green-50' },
-    { label: 'Potential', subtitle: 'Projected fees from listings', value: formatCurrency(potentialFees), icon: BarChart3, color: 'text-indigo-600 bg-indigo-50' },
-    { label: 'Total Pipeline', subtitle: 'Outstanding + active + listings combined', value: formatCurrency(totalPipeline), icon: DollarSign, color: 'text-purple-600 bg-purple-50' },
+    { label: 'Outstanding Fees', subtitle: 'Outstanding balance on closed deals (all-time)', value: formatCurrency(bo.outstandingFees), icon: Clock, color: 'text-amber-600 bg-amber-50' },
+    { label: 'Under Contract', subtitle: 'Projected TC fees from active deals', value: formatCurrency(bo.underContractProjected), icon: TrendingUp, color: 'text-green-600 bg-green-50' },
+    { label: 'Potential', subtitle: 'Projected fees from listings', value: formatCurrency(bo.potentialFees), icon: BarChart3, color: 'text-indigo-600 bg-indigo-50' },
+    { label: 'Total Pipeline', subtitle: 'Outstanding + active + listings combined', value: formatCurrency(bo.totalPipeline), icon: DollarSign, color: 'text-purple-600 bg-purple-50' },
   ]
 
   // Active deals for task dropdown
@@ -298,7 +240,7 @@ export default function Dashboard() {
       <div className="bg-white rounded-xl border border-gray-200 p-5">
         <div className="flex items-center gap-2 mb-4">
           <Calendar size={18} className="text-indigo-500" />
-          <h3 className="text-lg font-semibold text-gray-900">This Month — {thisMonthLabel}</h3>
+          <h3 className="text-lg font-semibold text-gray-900">This Month — {tm.monthLabel}</h3>
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <button onClick={() => goToMonthFilter(null)} className="text-left rounded-lg border border-gray-200 bg-gray-50 hover:bg-gray-100 p-3 transition-colors cursor-pointer">
@@ -306,46 +248,64 @@ export default function Dashboard() {
               <BarChart3 size={14} className="text-indigo-500" />
               <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Projected</span>
             </div>
-            <div className="text-xl font-bold text-gray-900">{formatCurrency(thisMonthProjected)}</div>
-            <div className="text-xs text-gray-500 mt-0.5">{dealLabel(projectedCount)}</div>
+            <div className="text-xl font-bold text-gray-900">{formatCurrency(tm.projected)}</div>
+            <div className="text-xs text-gray-500 mt-0.5">{dealLabel(tm.projectedCount)}</div>
           </button>
-          <button onClick={() => goToMonthFilter('has_payments')} className="text-left rounded-lg border border-green-200 bg-green-50 hover:bg-green-100 p-3 transition-colors cursor-pointer">
+          <button onClick={() => goToMonthFilter('paid')} className="text-left rounded-lg border border-green-200 bg-green-50 hover:bg-green-100 p-3 transition-colors cursor-pointer">
             <div className="flex items-center gap-1.5 mb-1">
               <CheckCircle size={14} className="text-green-600" />
               <span className="text-xs font-medium text-green-700 uppercase tracking-wide">Closed & Paid</span>
             </div>
-            <div className="text-xl font-bold text-green-900">{formatCurrency(thisMonthClosedPaid)}</div>
-            <div className="text-xs text-green-700/70 mt-0.5">{dealLabel(closedPaidCount)} fully paid</div>
+            <div className="text-xl font-bold text-green-900">{formatCurrency(tm.closedAndPaid)}</div>
+            <div className="text-xs text-green-700/70 mt-0.5">{dealLabel(tm.closedAndPaidCount)} fully paid</div>
           </button>
           <button onClick={() => goToMonthFilter('outstanding')} className="text-left rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 p-3 transition-colors cursor-pointer">
             <div className="flex items-center gap-1.5 mb-1">
               <Clock size={14} className="text-amber-600" />
               <span className="text-xs font-medium text-amber-700 uppercase tracking-wide">Awaiting Payment</span>
             </div>
-            <div className="text-xl font-bold text-amber-900">{formatCurrency(thisMonthClosedUnpaid)}</div>
-            <div className="text-xs text-amber-700/70 mt-0.5">{dealLabel(closedUnpaidCount)} outstanding</div>
+            <div className="text-xl font-bold text-amber-900">{formatCurrency(tm.awaitingPayment)}</div>
+            <div className="text-xs text-amber-700/70 mt-0.5">{dealLabel(tm.awaitingCount)} outstanding</div>
           </button>
           <button onClick={goToStillToClose} className="text-left rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 p-3 transition-colors cursor-pointer">
             <div className="flex items-center gap-1.5 mb-1">
               <TrendingUp size={14} className="text-indigo-600" />
               <span className="text-xs font-medium text-indigo-700 uppercase tracking-wide">Still to Close</span>
             </div>
-            <div className="text-xl font-bold text-indigo-900">{formatCurrency(thisMonthStillToClose)}</div>
-            <div className="text-xs text-indigo-700/70 mt-0.5">{dealLabel(stillToCloseCount)}</div>
+            <div className="text-xl font-bold text-indigo-900">{formatCurrency(tm.stillToClose)}</div>
+            <div className="text-xs text-indigo-700/70 mt-0.5">{dealLabel(tm.stillToCloseCount)} pending</div>
           </button>
         </div>
-        <div className="mt-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-0.5 text-xs text-gray-500 mb-1.5">
-            <span>{Math.round(thisMonthProgress)}% of projected has closed</span>
-            <span>
-              {formatCurrency(thisMonthRealized)} / {formatCurrency(thisMonthProjected)}
-              <span className="text-gray-400"> · {realizedCount} of {projectedCount} {projectedCount === 1 ? 'deal' : 'deals'}</span>
+
+        {/* Closures bar (top): how many deals have actually closed */}
+        <div className="mt-5">
+          <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+            <span className="font-medium text-gray-600">Closures</span>
+            <span>{tm.closedCount} of {tm.projectedCount} {tm.projectedCount === 1 ? 'deal' : 'deals'} closed</span>
+          </div>
+          <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+            <div className="h-full bg-gray-700" style={{ width: `${tm.closuresPct}%` }} />
+          </div>
+        </div>
+
+        {/* Collections bar (below): money in, vs awaiting payment, vs still pending */}
+        <div className="mt-3">
+          <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+            <span className="font-medium text-gray-600">Collections</span>
+            <span className="text-gray-400 truncate">
+              <span className="text-green-700">{formatCurrency(tm.segments.collected)}</span> collected
+              <span className="text-gray-400"> · </span>
+              <span className="text-amber-700">{formatCurrency(tm.segments.awaiting)}</span> awaiting
+              <span className="text-gray-400"> · </span>
+              <span className="text-gray-500">{formatCurrency(tm.segments.pending)}</span> pending
             </span>
           </div>
           <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
             <div className="h-full flex">
-              <div className="bg-green-500" style={{ width: `${thisMonthProjected > 0 ? (thisMonthClosedPaid / thisMonthProjected) * 100 : 0}%` }} />
-              <div className="bg-amber-400" style={{ width: `${thisMonthProjected > 0 ? (thisMonthClosedUnpaid / thisMonthProjected) * 100 : 0}%` }} />
+              <div className="bg-green-500" style={{ width: `${tm.segmentsPct.closedFull + tm.segmentsPct.closedReceived + tm.segmentsPct.notClosedReceived}%` }} />
+              <div className="bg-amber-400" style={{ width: `${tm.segmentsPct.closedOutstanding}%` }} />
+              {/* Trailing gray fills the remainder via the underlying bg; explicit segment kept for clarity */}
+              <div className="bg-gray-200" style={{ width: `${tm.segmentsPct.notClosedRemaining}%` }} />
             </div>
           </div>
         </div>

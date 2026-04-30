@@ -31,9 +31,11 @@ const PAID_STATUS_OPTIONS = [
 // not surfaced in the manual filter dropdown.
 //   outstanding  = awaiting OR partial (any unpaid balance after close)
 //   has_payments = paid OR partial (any payment received)
+//   not_closed   = deal status is not 'closed' (still in pipeline)
 const COMPOUND_PAID_FILTERS = {
   outstanding:  { states: ['awaiting', 'partial'], label: 'Has outstanding balance' },
   has_payments: { states: ['paid', 'partial'],     label: 'Has received payment' },
+  not_closed:   { predicate: (d) => d.status !== 'closed', label: 'Not yet closed' },
 }
 
 const SORTABLE_COLUMNS = {
@@ -127,6 +129,7 @@ export default function Deals() {
     if (paidFilter !== 'all') {
       const compound = COMPOUND_PAID_FILTERS[paidFilter]
       filtered = filtered.filter(d => {
+        if (compound?.predicate) return compound.predicate(d)
         const state = paymentStateFor(d, paymentsByDeal[d.id] || [])
         return compound ? compound.states.includes(state) : state === paidFilter
       })
