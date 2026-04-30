@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useDeals, useReminderDismissals, useTasks, useAgents, useAllPayments } from '../hooks/useSupabase'
@@ -7,6 +7,53 @@ import { thisMonthMetrics, businessOverviewMetrics } from '../lib/dashboardMetri
 import { TrendingUp, Home, XCircle, CheckCircle, DollarSign, Clock, BarChart3, Calendar, Plus, Trash2, Search, X } from 'lucide-react'
 import { format, addMonths, parseISO, startOfMonth, endOfMonth, startOfDay, isWithinInterval } from 'date-fns'
 import DealDetailModal from '../components/deals/DealDetailModal'
+
+// StackedBar — renders a percentage-based stacked progress bar with optional
+// % label centered in each segment. Labels are suppressed when the rendered
+// pixel width is below ~40px, regardless of underlying percentage. Uses
+// ResizeObserver so the threshold reacts to viewport changes.
+const MIN_LABEL_PX = 40
+function StackedBar({ segments }) {
+  const ref = useRef(null)
+  const [pxWidth, setPxWidth] = useState(0)
+
+  useEffect(() => {
+    if (!ref.current) return
+    const el = ref.current
+    const update = () => setPxWidth(el.getBoundingClientRect().width)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  return (
+    <div ref={ref} className="w-full h-5 bg-gray-100 rounded-full overflow-hidden flex">
+      {segments.map((s, i) => {
+        if (!s || s.pct <= 0) return null
+        const segPx = (pxWidth * s.pct) / 100
+        const showLabel = !s.hideLabel && segPx >= MIN_LABEL_PX
+        const isLightText = !s.textColor || s.textColor.includes('white')
+        return (
+          <div
+            key={i}
+            className={`${s.color} h-full flex items-center justify-center`}
+            style={{ width: `${s.pct}%` }}
+          >
+            {showLabel && (
+              <span
+                className={`text-[10px] font-semibold ${s.textColor || 'text-white'}`}
+                style={isLightText ? { textShadow: '0 1px 2px rgba(0,0,0,0.35)' } : undefined}
+              >
+                {Math.round(s.pct)}%
+              </span>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -277,18 +324,20 @@ export default function Dashboard() {
           </button>
         </div>
 
-        {/* Closures bar (top): how many deals have actually closed */}
+        {/* Closures bar (top): how many deals have actually closed.
+            Only the filled segment shows a label; trailing area is bare bg. */}
         <div className="mt-5">
           <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
             <span className="font-medium text-gray-600">Closures</span>
             <span>{tm.closedCount} of {tm.projectedCount} {tm.projectedCount === 1 ? 'deal' : 'deals'} closed</span>
           </div>
-          <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
-            <div className="h-full bg-gray-700" style={{ width: `${tm.closuresPct}%` }} />
-          </div>
+          <StackedBar segments={[
+            { pct: tm.closuresPct, color: 'bg-gray-700', textColor: 'text-white' },
+          ]} />
         </div>
 
-        {/* Collections bar (below): money in, vs awaiting payment, vs still pending */}
+        {/* Collections bar (below): money in, vs awaiting payment, vs still pending.
+            Three segments sum exactly to projected (100%). */}
         <div className="mt-3">
           <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
             <span className="font-medium text-gray-600">Collections</span>
@@ -300,14 +349,11 @@ export default function Dashboard() {
               <span className="text-gray-500">{formatCurrency(tm.segments.pending)}</span> pending
             </span>
           </div>
-          <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
-            <div className="h-full flex">
-              <div className="bg-green-500" style={{ width: `${tm.segmentsPct.closedFull + tm.segmentsPct.closedReceived + tm.segmentsPct.notClosedReceived}%` }} />
-              <div className="bg-amber-400" style={{ width: `${tm.segmentsPct.closedOutstanding}%` }} />
-              {/* Trailing gray fills the remainder via the underlying bg; explicit segment kept for clarity */}
-              <div className="bg-gray-200" style={{ width: `${tm.segmentsPct.notClosedRemaining}%` }} />
-            </div>
-          </div>
+          <StackedBar segments={[
+            { pct: tm.segmentsPct.closedFull + tm.segmentsPct.closedReceived + tm.segmentsPct.notClosedReceived, color: 'bg-green-500', textColor: 'text-white' },
+            { pct: tm.segmentsPct.closedOutstanding, color: 'bg-amber-400', textColor: 'text-amber-900' },
+            { pct: tm.segmentsPct.notClosedRemaining, color: 'bg-gray-200', textColor: 'text-gray-700' },
+          ]} />
         </div>
       </div>
 

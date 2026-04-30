@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import { formatCurrency } from '../lib/helpers'
+import { pipelinePendingFees } from '../lib/dashboardMetrics'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { format, parseISO } from 'date-fns'
 
@@ -12,20 +13,23 @@ export default function Reports() {
   const [deals, setDeals] = useState([])
   const [agents, setAgents] = useState([])
   const [contacts, setContacts] = useState([])
+  const [payments, setPayments] = useState([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('Overview')
   const [yearFilter, setYearFilter] = useState('all')
 
   useEffect(() => {
     const fetch = async () => {
-      const [{ data: d }, { data: a }, { data: c }] = await Promise.all([
+      const [{ data: d }, { data: a }, { data: c }, { data: p }] = await Promise.all([
         supabase.from('deals').select('*'),
         supabase.from('agents').select('*'),
         supabase.from('contacts').select('*'),
+        supabase.from('deal_payments').select('*'),
       ])
       setDeals(d || [])
       setAgents(a || [])
       setContacts(c || [])
+      setPayments(p || [])
       setLoading(false)
     }
     fetch()
@@ -82,7 +86,7 @@ export default function Reports() {
 
       {tab === 'Overview' && <OverviewTab deals={filteredDeals} agents={agents} contacts={contacts} />}
       {tab === 'By Agent' && <ByAgentTab deals={filteredDeals} agents={agents} contacts={contacts} />}
-      {tab === 'Pipeline' && <PipelineTab deals={filteredDeals} />}
+      {tab === 'Pipeline' && <PipelineTab deals={filteredDeals} payments={payments} />}
       {tab === 'Year over Year' && <YearOverYearTab deals={deals} agents={agents} contacts={contacts} />}
       {tab === 'Monthly Trends' && <MonthlyTrendsTab deals={filteredDeals} />}
       {tab === 'Individual Agent' && <IndividualAgentTab deals={filteredDeals} agents={agents} contacts={contacts} />}
@@ -236,12 +240,15 @@ function ByAgentTab({ deals, agents, contacts }) {
   )
 }
 
-function PipelineTab({ deals }) {
+function PipelineTab({ deals, payments }) {
   const active = deals.filter(d => d.status === 'active')
   const listings = deals.filter(d => d.status === 'listing')
   const activeValue = active.reduce((s, d) => s + (Number(d.price) || 0), 0)
   const listingValue = listings.reduce((s, d) => s + (Number(d.price) || 0), 0)
-  const pendingFees = [...active, ...listings].reduce((s, d) => s + (!d.tc_paid ? (Number(d.tc_fee) || 0) : 0), 0)
+  // Canonical: Σ max(0, tc_fee − received) across active+listing deals,
+  // sourced from deal_payments — matches the Dashboard's Outstanding Fees
+  // semantics (owed remainder, not full tc_fee).
+  const pendingFees = pipelinePendingFees(deals, payments)
 
   const kpis = [
     { label: 'Active Deal Value', value: formatCurrency(activeValue) }, { label: 'Listing Value', value: formatCurrency(listingValue) },

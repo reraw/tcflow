@@ -229,6 +229,22 @@ export function businessOverviewMetrics(deals, allPayments, ref = new Date()) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Pipeline / Reports — payment-aware "pending fees" across active+listing
+// deals. Σ max(0, tc_fee − received) for non-closed, non-cancelled deals.
+// Replaces Reports.jsx's legacy d.tc_paid read.
+// ─────────────────────────────────────────────────────────────────────────
+export function pipelinePendingFees(deals, allPayments) {
+  const byDeal = indexPaymentsByDeal(allPayments)
+  return deals
+    .filter(d => isActive(d) || isListing(d))
+    .reduce((s, d) => {
+      const fee = num(d.tc_fee)
+      const received = sumPayments(byDeal[d.id] || [])
+      return s + Math.max(0, fee - received)
+    }, 0)
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Sanity scenarios (also asserted in dev console on import in non-prod).
 // ─────────────────────────────────────────────────────────────────────────
 export function _runSanityScenarios() {
@@ -273,5 +289,11 @@ export function _runSanityScenarios() {
   // Closures bar: 2 of 4 closed, $ 1500 of 3500.
   pass &= expect('closedCount', m.closedCount, 2)
   pass &= expect('closedFeeSum', m.closedFeeSum, 1500)
+
+  // pipelinePendingFees: only active+listing deals contribute their owed
+  // remainder. C is active $800 (no payments) → 800. D is active $1200
+  // partial $400 → 800. A and B are closed → excluded. Total = 1600.
+  const pf = pipelinePendingFees(deals, payments)
+  pass &= expect('pipelinePendingFees', pf, 1600)
   return !!pass
 }
