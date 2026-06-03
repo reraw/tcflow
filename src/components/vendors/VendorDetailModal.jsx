@@ -50,7 +50,7 @@ export default function VendorDetailModal({ vendor, open, onClose, vendors, agen
         result.push(dealsById[id])
       }
     })
-    if (dealFilter === 'active') return result.filter(d => d.status === 'active' || d.status === 'listing')
+    if (dealFilter === 'active') return result.filter(d => (d.status === 'active' || d.status === 'listing') && !d.listing_cancelled)
     return result
   }, [attributedDealIds, dealsById, dealFilter])
 

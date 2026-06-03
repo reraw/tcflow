@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useDeals, useReminderDismissals, useTasks, useAgents, useAllPayments } from '../hooks/useSupabase'
 import { formatCurrency, formatShortDate, formatDate, generateReminders, REMINDER_COLORS, labelForReminderKey, colorForReminderKey } from '../lib/helpers'
-import { thisMonthMetrics, businessOverviewMetrics } from '../lib/dashboardMetrics'
+import { thisMonthMetrics, businessOverviewMetrics, isDead } from '../lib/dashboardMetrics'
 import { TrendingUp, Home, XCircle, CheckCircle, DollarSign, Clock, BarChart3, Calendar, Plus, Trash2, Search, X } from 'lucide-react'
 import { format, addMonths, parseISO, startOfMonth, endOfMonth, startOfDay, isWithinInterval } from 'date-fns'
 import DealDetailModal from '../components/deals/DealDetailModal'
@@ -140,7 +140,7 @@ export default function Dashboard() {
     const isCurrent = i === 0
     // For the current month, include closed deals too so "X of Y closed" is meaningful.
     const monthDeals = isCurrent
-      ? deals.filter(d => d.status !== 'cancelled' && inMonth(d))
+      ? deals.filter(d => !isDead(d) && inMonth(d))
       : active.filter(inMonth)
     const monthClosedCount = isCurrent ? monthDeals.filter(d => d.status === 'closed').length : 0
     projectedMonths.push({
@@ -263,6 +263,7 @@ export default function Dashboard() {
     { label: 'Listings', value: bo.listingsCount, icon: Home, color: 'text-blue-600 bg-blue-50', filter: 'listing' },
     { label: 'Under Contract', value: bo.activeCount, icon: TrendingUp, color: 'text-green-600 bg-green-50', filter: 'active' },
     { label: 'Cancelled', value: bo.cancelledCount, icon: XCircle, color: 'text-red-600 bg-red-50', filter: 'cancelled' },
+    { label: 'Cancelled Listings', value: bo.listingCancelledCount, icon: XCircle, color: 'text-rose-600 bg-rose-50', filter: 'listing_cancelled' },
     { label: 'Closed YTD', value: bo.closedYTDCount, icon: CheckCircle, color: 'text-gray-600 bg-gray-100', filter: 'closed' },
     { label: 'Collected', value: formatCurrency(bo.collected), icon: DollarSign, color: 'text-emerald-600 bg-emerald-50' },
   ]
@@ -275,7 +276,7 @@ export default function Dashboard() {
   ]
 
   // Active deals for task dropdown
-  const activeDeals = deals.filter(d => d.status !== 'closed' && d.status !== 'cancelled')
+  const activeDeals = deals.filter(d => d.status !== 'closed' && !isDead(d))
 
   if (loading) return <div className="flex items-center justify-center h-64"><div className="text-gray-400">Loading...</div></div>
 

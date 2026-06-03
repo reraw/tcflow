@@ -25,6 +25,12 @@ export const isClosed = (deal) => deal?.status === 'closed'
 export const isCancelled = (deal) => deal?.status === 'cancelled'
 export const isActive = (deal) => deal?.status === 'active'
 export const isListing = (deal) => deal?.status === 'listing'
+// Listing-cancellation is a SEPARATE axis from status — a deal can be
+// listing-cancelled regardless of its status (including alongside
+// status==='cancelled', the "both" case). isDead = excluded from every
+// live/pipeline calculation.
+export const isListingCancelled = (deal) => deal?.listing_cancelled === true
+export const isDead = (deal) => isCancelled(deal) || isListingCancelled(deal)
 
 // Bucket a single deal into per-segment dollar contributions for the
 // This-Month progress bar. Returns { closedFull, closedReceived,
@@ -43,10 +49,11 @@ export function dealContributions(deal, payments = []) {
   return { closedFull: 0, closedReceived: 0, closedOutstanding: 0, notClosedReceived: received, notClosedRemaining: remaining }
 }
 
-// Universe filter: deals closing in [start, end] excluding cancelled.
+// Universe filter: deals closing in [start, end] excluding dead deals
+// (cancelled escrow OR cancelled listing).
 function dealsInWindow(deals, start, end) {
   return deals.filter(d => {
-    if (isCancelled(d)) return false
+    if (isDead(d)) return false
     if (!d.close_date) return false
     return isWithinInterval(parseISO(d.close_date), { start, end })
   })
@@ -191,9 +198,12 @@ export function businessOverviewMetrics(deals, allPayments, ref = new Date()) {
   const yearEnd   = `${year}-12-31`
   const byDeal = indexPaymentsByDeal(allPayments)
 
-  const listings = deals.filter(isListing)
-  const active = deals.filter(isActive)
+  // Listing-cancelled deals drop out of the live listing/under-contract
+  // pipeline so their tc_fee never inflates Potential/Pipeline.
+  const listings = deals.filter(d => isListing(d) && !isListingCancelled(d))
+  const active = deals.filter(d => isActive(d) && !isListingCancelled(d))
   const cancelled = deals.filter(isCancelled)
+  const listingCancelled = deals.filter(isListingCancelled)
   const closedAll = deals.filter(isClosed)
   const closedYTD = closedAll.filter(d => d.close_date && d.close_date >= yearStart && d.close_date <= yearEnd)
 
@@ -219,6 +229,7 @@ export function businessOverviewMetrics(deals, allPayments, ref = new Date()) {
     listingsCount: listings.length,
     activeCount: active.length,
     cancelledCount: cancelled.length,
+    listingCancelledCount: listingCancelled.length,
     closedYTDCount: closedYTD.length,
     collected,
     outstandingFees,
@@ -236,7 +247,7 @@ export function businessOverviewMetrics(deals, allPayments, ref = new Date()) {
 export function pipelinePendingFees(deals, allPayments) {
   const byDeal = indexPaymentsByDeal(allPayments)
   return deals
-    .filter(d => isActive(d) || isListing(d))
+    .filter(d => (isActive(d) || isListing(d)) && !isListingCancelled(d))
     .reduce((s, d) => {
       const fee = num(d.tc_fee)
       const received = sumPayments(byDeal[d.id] || [])

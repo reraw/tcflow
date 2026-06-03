@@ -111,6 +111,8 @@ function OverviewTab({ deals, agents, contacts }) {
   const active = deals.filter(d => d.status === 'active')
   const listings = deals.filter(d => d.status === 'listing')
   const cancelled = deals.filter(d => d.status === 'cancelled')
+  // Overlaps with `cancelled` by design — a "both" deal counts in each.
+  const listingCancelled = deals.filter(d => d.listing_cancelled)
   const totalVolume = closed.reduce((s, d) => s + (Number(d.price) || 0), 0)
   const totalRevenue = closed.reduce((s, d) => s + (Number(d.tc_fee) || 0), 0)
   const avgFee = closed.length ? totalRevenue / closed.length : 0
@@ -131,6 +133,7 @@ function OverviewTab({ deals, agents, contacts }) {
   const kpis = [
     { label: 'Total Closed', value: closed.length }, { label: 'Active Deals', value: active.length },
     { label: 'Listings', value: listings.length }, { label: 'Cancelled', value: cancelled.length },
+    { label: 'Cancelled Listings', value: listingCancelled.length },
     { label: 'Total Volume', value: formatCurrency(totalVolume) }, { label: 'Total Revenue', value: formatCurrency(totalRevenue) },
     { label: 'Avg Fee', value: formatCurrency(avgFee) }, { label: 'Total Deals', value: deals.length },
   ]
@@ -181,11 +184,12 @@ function ByAgentTab({ deals, agents, contacts }) {
     deals.forEach(deal => {
       const agent = getAgentForDeal(deal, contacts, agents)
       const name = agent?.name || 'Unassigned'
-      if (!stats[name]) stats[name] = { name, closed: 0, active: 0, cancelled: 0, volume: 0, revenue: 0, total: 0 }
+      if (!stats[name]) stats[name] = { name, closed: 0, active: 0, cancelled: 0, listingCancelled: 0, volume: 0, revenue: 0, total: 0 }
       stats[name].total++
       if (deal.status === 'closed') { stats[name].closed++; stats[name].volume += Number(deal.price) || 0; stats[name].revenue += Number(deal.tc_fee) || 0 }
       if (deal.status === 'active') stats[name].active++
       if (deal.status === 'cancelled') stats[name].cancelled++
+      if (deal.listing_cancelled) stats[name].listingCancelled++
     })
     return Object.values(stats).sort((a, b) => b.revenue - a.revenue)
   }, [deals, agents, contacts])
@@ -201,6 +205,7 @@ function ByAgentTab({ deals, agents, contacts }) {
                 <th className="text-right px-4 py-3 font-medium text-gray-600">Closed</th>
                 <th className="text-right px-4 py-3 font-medium text-gray-600 hidden sm:table-cell">Active</th>
                 <th className="text-right px-4 py-3 font-medium text-gray-600 hidden sm:table-cell">Cancelled</th>
+                <th className="text-right px-4 py-3 font-medium text-gray-600 hidden sm:table-cell">Cancelled Listings</th>
                 <th className="text-right px-4 py-3 font-medium text-gray-600 hidden md:table-cell">Volume</th>
                 <th className="text-right px-4 py-3 font-medium text-gray-600">Revenue</th>
                 <th className="text-right px-4 py-3 font-medium text-gray-600 hidden lg:table-cell">Close Rate</th>
@@ -213,6 +218,7 @@ function ByAgentTab({ deals, agents, contacts }) {
                   <td className="px-4 py-3 text-right text-gray-700">{a.closed}</td>
                   <td className="px-4 py-3 text-right text-gray-700 hidden sm:table-cell">{a.active}</td>
                   <td className="px-4 py-3 text-right text-gray-700 hidden sm:table-cell">{a.cancelled}</td>
+                  <td className="px-4 py-3 text-right text-gray-700 hidden sm:table-cell">{a.listingCancelled}</td>
                   <td className="px-4 py-3 text-right text-gray-700 hidden md:table-cell">{formatCurrency(a.volume)}</td>
                   <td className="px-4 py-3 text-right font-medium text-gray-900">{formatCurrency(a.revenue)}</td>
                   <td className="px-4 py-3 text-right text-gray-700 hidden lg:table-cell">{a.total > 0 ? `${Math.round((a.closed / a.total) * 100)}%` : '—'}</td>
@@ -502,6 +508,7 @@ function IndividualAgentTab({ deals, agents, contacts }) {
   const closed = agentDeals.filter(d => d.status === 'closed')
   const active = agentDeals.filter(d => d.status === 'active')
   const cancelled = agentDeals.filter(d => d.status === 'cancelled')
+  const listingCancelled = agentDeals.filter(d => d.listing_cancelled)
   const listings = agentDeals.filter(d => d.status === 'listing')
   const volume = closed.reduce((s, d) => s + (Number(d.price) || 0), 0)
   const revenue = closed.reduce((s, d) => s + (Number(d.tc_fee) || 0), 0)
@@ -532,6 +539,7 @@ function IndividualAgentTab({ deals, agents, contacts }) {
             {[
               { label: 'Closed', value: closed.length }, { label: 'Active', value: active.length },
               { label: 'Listings', value: listings.length }, { label: 'Cancelled', value: cancelled.length },
+              { label: 'Cancelled Listings', value: listingCancelled.length },
               { label: 'Volume', value: formatCurrency(volume) }, { label: 'Revenue', value: formatCurrency(revenue) },
               { label: 'Avg Fee', value: formatCurrency(closed.length ? revenue / closed.length : 0) },
               { label: 'Close Rate', value: agentDeals.length ? `${Math.round((closed.length / agentDeals.length) * 100)}%` : '—' },

@@ -106,8 +106,9 @@ export function generateReminders(deals, allCustomDates = [], options = {}) {
   // `noDateLimit` removes the 14-day window (used by search).
   // `includeClosed` forces inclusion of closed/cancelled deals in search
   // results. By default we now INCLUDE closed deals (their open reminders
-  // stay visible in Active until manually checked off); cancelled deals
-  // are skipped unless explicitly included.
+  // stay visible in Active until manually checked off); cancelled deals AND
+  // listing-cancelled deals are treated as dead and skipped unless
+  // explicitly included.
   const { noDateLimit = false, includeClosed = false } = options
   const today = new Date()
   today.setHours(0, 0, 0, 0)
@@ -115,7 +116,7 @@ export function generateReminders(deals, allCustomDates = [], options = {}) {
   const reminders = []
 
   deals.forEach(deal => {
-    if (deal.status === 'cancelled' && !includeClosed) return
+    if ((deal.status === 'cancelled' || deal.listing_cancelled) && !includeClosed) return
     if (!deal.close_date) return
 
     const closeDate = parseISO(deal.close_date)

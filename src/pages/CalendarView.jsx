@@ -55,7 +55,7 @@ export default function CalendarView() {
 
     // Close dates (red)
     deals.forEach(deal => {
-      if (!deal.close_date || deal.status === 'cancelled') return
+      if (!deal.close_date || deal.status === 'cancelled' || deal.listing_cancelled) return
       const d = parseISO(deal.close_date)
       addEvent(d, { label: deal.address, color: 'bg-red-500', textColor: 'text-white', deal, type: 'close' })
     })

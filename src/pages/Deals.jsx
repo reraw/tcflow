@@ -6,6 +6,7 @@ import {
   formatCurrency, formatDate, getStatusColor, getStatusLabel, getRepLabel,
   paymentStateFor, paymentSummary, PAYMENT_STATE_LABELS,
 } from '../lib/helpers'
+import { isDead } from '../lib/dashboardMetrics'
 import Modal from '../components/ui/Modal'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import DealForm from '../components/deals/DealForm'
@@ -16,8 +17,21 @@ import { parseISO, startOfMonth, endOfMonth, isWithinInterval, format } from 'da
 
 const TABS = [
   { key: 'all', label: 'All' }, { key: 'listing', label: 'Listings' },
-  { key: 'active', label: 'Under Contract' }, { key: 'cancelled', label: 'Cancelled' }, { key: 'closed', label: 'Closed' },
+  { key: 'active', label: 'Under Contract' }, { key: 'cancelled', label: 'Cancelled' },
+  { key: 'listing_cancelled', label: 'Cancelled Listings' }, { key: 'closed', label: 'Closed' },
 ]
+
+// Tab membership. 'listing' shows only LIVE listings (dead ones drop out);
+// 'listing_cancelled' shows any listing-cancelled deal; 'cancelled' shows
+// escrow-cancelled deals — a "both" deal appears in both cancelled tabs.
+function dealMatchesTab(deal, tabKey) {
+  switch (tabKey) {
+    case 'all': return true
+    case 'listing': return deal.status === 'listing' && !deal.listing_cancelled
+    case 'listing_cancelled': return deal.listing_cancelled === true
+    default: return deal.status === tabKey
+  }
+}
 
 const PAID_STATUS_OPTIONS = [
   { key: 'all',      label: 'All' },
@@ -122,9 +136,9 @@ export default function Deals() {
 
   const filteredDeals = useMemo(() => {
     let filtered = deals
-    if (activeTab !== 'all') filtered = filtered.filter(d => d.status === activeTab)
+    if (activeTab !== 'all') filtered = filtered.filter(d => dealMatchesTab(d, activeTab))
     if (monthFilter) {
-      filtered = filtered.filter(d => d.status !== 'cancelled' && d.close_date && isWithinInterval(parseISO(d.close_date), monthFilter))
+      filtered = filtered.filter(d => !isDead(d) && d.close_date && isWithinInterval(parseISO(d.close_date), monthFilter))
     }
     if (paidFilter !== 'all') {
       const compound = COMPOUND_PAID_FILTERS[paidFilter]
@@ -293,7 +307,7 @@ export default function Deals() {
       <div className="flex gap-1 border-b border-gray-200 overflow-x-auto">
         {TABS.map(tab => (
           <button key={tab.key} onClick={() => handleTabChange(tab.key)} className={`px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${activeTab === tab.key ? 'border-indigo-primary text-indigo-primary' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-            {tab.label}<span className="ml-1.5 text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded-full">{tab.key === 'all' ? deals.length : deals.filter(d => d.status === tab.key).length}</span>
+            {tab.label}<span className="ml-1.5 text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded-full">{tab.key === 'all' ? deals.length : deals.filter(d => dealMatchesTab(d, tab.key)).length}</span>
           </button>
         ))}
       </div>
@@ -341,7 +355,14 @@ export default function Deals() {
                         <div className="text-xs text-gray-500">{[deal.city, getAgentName(deal.agent_id)].filter(Boolean).join(' · ')}</div>
                       </td>
                       <td className="px-4 py-3 hidden sm:table-cell"><span className="text-xs text-gray-600">{getRepLabel(deal.representation)}</span></td>
-                      <td className="px-4 py-3"><span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${getStatusColor(deal.status)}`}>{getStatusLabel(deal.status)}</span></td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap items-center gap-1">
+                          <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${getStatusColor(deal.status)}`}>{getStatusLabel(deal.status)}</span>
+                          {deal.listing_cancelled && (
+                            <span className="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-rose-100 text-rose-700">Listing Cancelled</span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-4 py-3 text-right text-gray-700 hidden md:table-cell">{formatCurrency(deal.price)}</td>
                       <td className="px-4 py-3 text-gray-700 hidden lg:table-cell">{formatDate(deal.close_date)}</td>
                       <td className="px-4 py-3 text-right">

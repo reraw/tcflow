@@ -7,7 +7,7 @@ import PhoneInput from '../ui/PhoneInput'
 import { Plus, X, Zap } from 'lucide-react'
 
 const EMPTY_DEAL = {
-  address: '', city: '', status: 'active', representation: 'buyer_only',
+  address: '', city: '', status: 'active', listing_cancelled: false, representation: 'buyer_only',
   agent_id: '', co_agent_id: '', price: '',
   acceptance_date: '', close_date: '', possession_date: '',
   disclosures_sent: '',
@@ -203,6 +203,11 @@ export default function DealForm({ onSubmit, onCancel, initialData, initialCusto
     cleaned.referral_percentage = cleaned.referral_percentage === '' ? null : Number(cleaned.referral_percentage)
     if (!cleaned.is_referral) { cleaned.referral_agreement = false; cleaned.referral_percentage = null }
     if (!cleaned.referral_agreement) { cleaned.referral_percentage = null }
+    // Listing-cancellation: persist flag + stamp/clear timestamp.
+    cleaned.listing_cancelled = !!cleaned.listing_cancelled
+    cleaned.listing_cancelled_at = cleaned.listing_cancelled
+      ? (initialData?.listing_cancelled_at || new Date().toISOString())
+      : null
     cleaned.commission_buyer_type = buyerCommType
     cleaned.commission_seller_type = sellerCommType
     if (cleaned.agent_id === '' || cleaned.agent_id === '__new__') cleaned.agent_id = null
@@ -317,6 +322,10 @@ export default function DealForm({ onSubmit, onCancel, initialData, initialCusto
           <select className={inp} value={form.status} onChange={set('status')}>
             <option value="active">Under Contract</option><option value="listing">Listing</option><option value="closed">Closed</option><option value="cancelled">Cancelled</option>
           </select>
+          <label className="flex items-center gap-2 mt-2 text-sm text-gray-700 cursor-pointer">
+            <input type="checkbox" checked={!!form.listing_cancelled} onChange={e => setForm({ ...form, listing_cancelled: e.target.checked })} className="h-4 w-4 rounded border-gray-300 text-rose-600" />
+            Listing cancelled
+          </label>
         </div>
         <div><label className={lbl}>Price</label><CurrencyInput className={inp} value={form.price} onChange={set('price')} /></div>
 

@@ -25,6 +25,7 @@ export default function DealDetailModal({ deal, open, onClose, onUpdate, onPayme
 
   if (!deal) return null
   const isCancelled = deal.status === 'cancelled'
+  const isListingCancelled = deal.listing_cancelled === true
 
   return (
     <Modal open={open} onClose={onClose} title={deal.address} wide>
@@ -34,9 +35,20 @@ export default function DealDetailModal({ deal, open, onClose, onUpdate, onPayme
           <span className="text-sm font-medium text-red-700">This deal has been cancelled</span>
         </div>
       )}
+      {isListingCancelled && (
+        <div className="flex items-center gap-2 px-4 py-2.5 bg-rose-50 border border-rose-200 rounded-lg mb-4 -mt-1">
+          <AlertTriangle size={16} className="text-rose-600 shrink-0" />
+          <span className="text-sm font-medium text-rose-700">This listing has been cancelled.</span>
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-4 text-sm mb-4 pb-3 border-b border-gray-100">
-        <div><span className="text-gray-500">Status:</span> <span className="font-medium">{getStatusLabel(deal.status)}</span></div>
+        <div className="flex items-center gap-2">
+          <span><span className="text-gray-500">Status:</span> <span className="font-medium">{getStatusLabel(deal.status)}</span></span>
+          {isListingCancelled && (
+            <span className="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-rose-100 text-rose-700">Listing Cancelled</span>
+          )}
+        </div>
         <div><span className="text-gray-500">Rep:</span> <span className="font-medium">{getRepLabel(deal.representation)}</span></div>
         {agentName && <div><span className="text-gray-500">Agent:</span> <span className="font-medium text-indigo-600">{agentName}</span></div>}
         {coAgentName && <div><span className="text-gray-500">Co-Agent:</span> <span className="font-medium text-indigo-600">{coAgentName}</span></div>}
@@ -65,6 +77,7 @@ function DetailsTab({ deal, onUpdate }) {
   useEffect(() => {
     setForm({
       status: deal.status || 'active',
+      listing_cancelled: deal.listing_cancelled || false,
       acceptance_date: deal.acceptance_date || '', close_date: deal.close_date || '',
       possession_date: deal.possession_date || '', disclosures_sent: deal.disclosures_sent || '',
       representation: deal.representation || 'buyer_only',
@@ -87,6 +100,12 @@ function DetailsTab({ deal, onUpdate }) {
     cleaned.referral_percentage = cleaned.referral_percentage === '' ? null : Number(cleaned.referral_percentage)
     if (!cleaned.is_referral) { cleaned.referral_agreement = false; cleaned.referral_percentage = null }
     if (!cleaned.referral_agreement) { cleaned.referral_percentage = null }
+    // Listing-cancellation timestamp: stamp now() when turning on (preserving
+    // an existing stamp), clear when turning off.
+    cleaned.listing_cancelled = !!cleaned.listing_cancelled
+    cleaned.listing_cancelled_at = cleaned.listing_cancelled
+      ? (deal.listing_cancelled_at || new Date().toISOString())
+      : null
     await onUpdate(deal.id, cleaned)
     setEditing(false)
   }
@@ -113,6 +132,19 @@ function DetailsTab({ deal, onUpdate }) {
           ) : (
             <p className="text-sm text-gray-900 mt-0.5">{getStatusLabel(deal.status)}</p>
           )}
+          {editing ? (
+            <label className="flex items-center gap-2 mt-2 text-sm text-gray-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!!form.listing_cancelled}
+                onChange={e => setForm({ ...form, listing_cancelled: e.target.checked })}
+                className="h-4 w-4 rounded border-gray-300 text-rose-600"
+              />
+              Listing cancelled
+            </label>
+          ) : deal.listing_cancelled ? (
+            <p className="text-xs font-medium text-rose-600 mt-1">Listing cancelled</p>
+          ) : null}
         </div>
         <div>
           <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Representation</label>

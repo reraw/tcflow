@@ -51,6 +51,9 @@ export function useDeals() {
           const labels = { active: 'Under Contract', listing: 'Listing', closed: 'Closed', cancelled: 'Cancelled' }
           await logHistory(id, `Status changed to ${labels[updates.status] || updates.status}`)
         }
+        if (updates.listing_cancelled !== undefined && updates.listing_cancelled !== oldDeal.listing_cancelled) {
+          await logHistory(id, updates.listing_cancelled ? 'Listing marked cancelled' : 'Listing cancellation reverted')
+        }
         if (updates.tc_paid !== undefined && updates.tc_paid !== oldDeal.tc_paid) {
           await logHistory(id, updates.tc_paid ? 'TC fee marked as paid' : 'TC fee marked as unpaid')
         }
