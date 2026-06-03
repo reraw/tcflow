@@ -1,12 +1,13 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Modal from '../ui/Modal'
 import CurrencyInput from '../ui/CurrencyInput'
 import ConfirmDialog from '../ui/ConfirmDialog'
-import { useContacts, useDealHistory, useCustomDates, useTasks, usePayments, markPaidInFull } from '../../hooks/useSupabase'
+import { useContacts, useDealHistory, useCustomDates, useTasks, usePayments, markPaidInFull, seedDefaultTasks } from '../../hooks/useSupabase'
 import {
   formatDate, formatCurrency, daysUntil, getStatusLabel, getRepLabel,
-  paymentStateFor, paymentSummary, PAID_BY_OPTIONS, PAYMENT_STATE_LABELS, PAYMENT_STATE_STYLES,
+  paymentSummary, PAID_BY_OPTIONS, PAYMENT_STATE_LABELS, PAYMENT_STATE_STYLES,
 } from '../../lib/helpers'
+import { STAGE_LABELS, STAGE_RANK, isTaskResolved, gateMessage } from '../../lib/taskTemplates'
 import { AlertTriangle, Plus, Trash2, Pencil, Check, X } from 'lucide-react'
 
 const TABS = ['Details', 'Timeline', 'Contacts', 'Financials', 'Tasks', 'History']
@@ -64,7 +65,7 @@ export default function DealDetailModal({ deal, open, onClose, onUpdate, onPayme
       {tab === 'Timeline' && <TimelineTab deal={deal} customDates={customDates} addCustomDate={addCustomDate} deleteCustomDate={deleteCustomDate} />}
       {tab === 'Contacts' && <ContactsTab contacts={contacts} extraContacts={extraContacts} upsertContact={upsertContact} addExtraContact={addExtraContact} deleteExtraContact={deleteExtraContact} />}
       {tab === 'Financials' && <FinancialsTab deal={deal} onUpdate={onUpdate} onPaymentsChanged={onPaymentsChanged} />}
-      {tab === 'Tasks' && <TasksTab dealId={deal.id} />}
+      {tab === 'Tasks' && <TasksTab deal={deal} />}
       {tab === 'History' && <HistoryTab history={history} addEntry={addEntry} />}
     </Modal>
   )
@@ -106,7 +107,12 @@ function DetailsTab({ deal, onUpdate }) {
     cleaned.listing_cancelled_at = cleaned.listing_cancelled
       ? (deal.listing_cancelled_at || new Date().toISOString())
       : null
-    await onUpdate(deal.id, cleaned)
+    const result = await onUpdate(deal.id, cleaned)
+    // Gate rejection: surface blockers, stay in edit mode, don't flip state.
+    if (result?.gate) {
+      alert(gateMessage(result.remaining))
+      return
+    }
     setEditing(false)
   }
 
@@ -752,50 +758,118 @@ function PaymentsSection({ deal, onPaymentsChanged }) {
   )
 }
 
-function TasksTab({ dealId }) {
-  const { tasks, createTask, toggleTask, deleteTask } = useTasks(dealId)
+// Single task line with mutually-exclusive Complete / N/A checkboxes.
+function TaskRow({ task, onSetStatus, onDelete }) {
+  const resolved = isTaskResolved(task)
+  const rowBg = task.status === 'complete'
+    ? 'bg-green-50 border-green-200'
+    : task.status === 'na'
+      ? 'bg-gray-50 border-gray-200'
+      : 'bg-orange-50 border-orange-200'
+  return (
+    <div className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border ${rowBg}`}>
+      <div className="flex-1 min-w-0">
+        <p className={`text-sm ${resolved ? 'text-gray-500' : 'text-gray-800'} ${task.status === 'complete' ? 'line-through' : ''}`}>{task.description}</p>
+        {task.due_date && <p className="text-xs text-gray-400 mt-0.5">{formatDate(task.due_date)}</p>}
+      </div>
+      <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer shrink-0">
+        <input
+          type="checkbox"
+          checked={task.status === 'complete'}
+          onChange={() => onSetStatus(task.id, task.status === 'complete' ? 'open' : 'complete')}
+          className="h-4 w-4 rounded border-gray-300 text-green-600"
+        />
+        Complete
+      </label>
+      <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer shrink-0">
+        <input
+          type="checkbox"
+          checked={task.status === 'na'}
+          onChange={() => onSetStatus(task.id, task.status === 'na' ? 'open' : 'na')}
+          className="h-4 w-4 rounded border-gray-300 text-gray-500"
+        />
+        N/A
+      </label>
+      {onDelete && (
+        <button onClick={() => onDelete(task.id)} className="text-gray-400 hover:text-red-500 shrink-0"><Trash2 size={14} /></button>
+      )}
+    </div>
+  )
+}
+
+function TasksTab({ deal }) {
+  const dealId = deal.id
+  const { tasks, loading, createTask, setTaskStatus, deleteTask, fetchTasks } = useTasks(dealId)
   const [newTask, setNewTask] = useState({ description: '', due_date: '' })
+  const seededRef = useRef(false)
+
+  // Lazy backfill: a current listing (created_as_listing) whose listing
+  // defaults were never materialized gets them on first Tasks-tab open.
+  useEffect(() => {
+    if (loading || seededRef.current) return
+    if (deal.created_as_listing && deal.status === 'listing') {
+      const hasListingDefaults = tasks.some(t => t.is_default && t.stage === 'listing')
+      if (!hasListingDefaults) {
+        seededRef.current = true
+        seedDefaultTasks(dealId, 'listing').then(() => fetchTasks())
+      }
+    }
+  }, [loading, tasks, deal, dealId, fetchTasks])
 
   const handleAdd = async () => {
     if (!newTask.description) return
-    await createTask({ deal_id: dealId, description: newTask.description, due_date: newTask.due_date || null })
+    await createTask({ deal_id: dealId, description: newTask.description, due_date: newTask.due_date || null, status: 'open', is_default: false })
     setNewTask({ description: '', due_date: '' })
   }
 
+  const defaults = tasks
+    .filter(t => t.is_default)
+    .sort((a, b) => {
+      const sr = (STAGE_RANK[a.stage] ?? 9) - (STAGE_RANK[b.stage] ?? 9)
+      return sr !== 0 ? sr : (a.sort_order ?? 0) - (b.sort_order ?? 0)
+    })
+  const manual = tasks.filter(t => !t.is_default)
+  const defaultStages = ['listing', 'closed'].filter(stage => defaults.some(t => t.stage === stage))
+
   return (
-    <div className="space-y-4">
-      <div className="flex gap-2 items-end">
-        <input
-          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-          placeholder="New task description..."
-          value={newTask.description}
-          onChange={e => setNewTask({ ...newTask, description: e.target.value })}
-          onKeyDown={e => { if (e.key === 'Enter') handleAdd() }}
-        />
-        <input type="date" className="px-3 py-2 border border-gray-300 rounded-lg text-sm" value={newTask.due_date} onChange={e => setNewTask({ ...newTask, due_date: e.target.value })} />
-        <button onClick={handleAdd} className="px-4 py-2 text-sm font-medium text-white bg-indigo-primary rounded-lg hover:bg-indigo-700">Add</button>
-      </div>
-      {tasks.length === 0 ? (
-        <p className="text-sm text-gray-400 text-center py-4">No tasks for this deal</p>
-      ) : (
-        <div className="space-y-2">
-          {tasks.map(t => (
-            <div key={t.id} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border ${t.completed ? 'bg-gray-50 border-gray-200' : 'bg-orange-50 border-orange-200'}`}>
-              <input
-                type="checkbox"
-                checked={t.completed}
-                onChange={() => toggleTask(t.id, !t.completed)}
-                className="h-4 w-4 rounded border-gray-300 text-indigo-600 shrink-0"
-              />
-              <div className="flex-1 min-w-0">
-                <p className={`text-sm ${t.completed ? 'line-through text-gray-500' : 'text-gray-800'}`}>{t.description}</p>
-              </div>
-              {t.due_date && <span className="text-xs text-gray-500">{formatDate(t.due_date)}</span>}
-              <button onClick={() => deleteTask(t.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={14} /></button>
-            </div>
+    <div className="space-y-5">
+      {/* Default checklist groups (not deletable) */}
+      {defaultStages.map(stage => (
+        <div key={stage} className="space-y-2">
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{STAGE_LABELS[stage]}</p>
+          {defaults.filter(t => t.stage === stage).map(t => (
+            <TaskRow key={t.id} task={t} onSetStatus={setTaskStatus} />
           ))}
         </div>
-      )}
+      ))}
+
+      {/* Manual tasks */}
+      <div className="space-y-2">
+        {defaultStages.length > 0 && <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Other Tasks</p>}
+        <div className="flex gap-2 items-end">
+          <div className="flex-1">
+            <input
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+              placeholder="New task description..."
+              value={newTask.description}
+              onChange={e => setNewTask({ ...newTask, description: e.target.value })}
+              onKeyDown={e => { if (e.key === 'Enter') handleAdd() }}
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-400 mb-0.5">Due date (optional)</label>
+            <input type="date" className="px-3 py-2 border border-gray-300 rounded-lg text-sm" value={newTask.due_date} onChange={e => setNewTask({ ...newTask, due_date: e.target.value })} />
+          </div>
+          <button onClick={handleAdd} className="px-4 py-2 text-sm font-medium text-white bg-indigo-primary rounded-lg hover:bg-indigo-700">Add</button>
+        </div>
+        {manual.length === 0 ? (
+          <p className="text-sm text-gray-400 text-center py-3">No additional tasks</p>
+        ) : (
+          manual.map(t => (
+            <TaskRow key={t.id} task={t} onSetStatus={setTaskStatus} onDelete={deleteTask} />
+          ))
+        )}
+      </div>
     </div>
   )
 }

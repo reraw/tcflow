@@ -1,12 +1,13 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useDeals, useAgents, useAllPayments, markPaidInFull, clearPayments, findOrCreateVendor } from '../hooks/useSupabase'
+import { useDeals, useAgents, useAllPayments, useAllTasks, markPaidInFull, clearPayments, findOrCreateVendor } from '../hooks/useSupabase'
 import { supabase } from '../lib/supabase'
 import {
   formatCurrency, formatDate, getStatusColor, getStatusLabel, getRepLabel,
   paymentStateFor, paymentSummary, PAYMENT_STATE_LABELS,
 } from '../lib/helpers'
 import { isDead } from '../lib/dashboardMetrics'
+import { isTaskOpen, gateMessage } from '../lib/taskTemplates'
 import Modal from '../components/ui/Modal'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import DealForm from '../components/deals/DealForm'
@@ -31,6 +32,17 @@ function dealMatchesTab(deal, tabKey) {
     case 'listing_cancelled': return deal.listing_cancelled === true
     default: return deal.status === tabKey
   }
+}
+
+// Row checklist indicator. Only listing-origin deals (created_as_listing)
+// currently in a checklist-bearing stage ('listing' or 'closed') get a pill.
+// 'outstanding' → any open task; 'complete' → all resolved AND defaults exist;
+// null → no pill (e.g. defaults not yet seeded, or wrong stage/origin).
+function taskIndicatorFor(deal, dealTasks) {
+  if (!deal.created_as_listing) return null
+  if (deal.status !== 'listing' && deal.status !== 'closed') return null
+  if (!dealTasks || dealTasks.length === 0) return null
+  return dealTasks.some(isTaskOpen) ? 'outstanding' : 'complete'
 }
 
 const PAID_STATUS_OPTIONS = [
@@ -81,6 +93,7 @@ export default function Deals() {
   const { deals, loading, createDeal, updateDeal, deleteDeal } = useDeals()
   const { agents } = useAgents()
   const { payments: allPayments, fetchAll: refetchPayments } = useAllPayments()
+  const { tasks: allTasks, fetchAll: refetchTasks } = useAllTasks()
 
   // Search index for vendor / client names — built from contacts table.
   const [allContacts, setAllContacts] = useState([])
@@ -97,6 +110,23 @@ export default function Deals() {
     })
     return m
   }, [allPayments])
+
+  // Tasks grouped per deal — drives row pills and tab dots.
+  const tasksByDeal = useMemo(() => {
+    const m = {}
+    allTasks.forEach(t => { (m[t.deal_id] = m[t.deal_id] || []).push(t) })
+    return m
+  }, [allTasks])
+
+  // Tab dot flags. Listings: red if any current listing has an open task.
+  // Closed: red if any closed listing-origin file has an open task; orange
+  // (independent) if any closed deal has outstanding checks (awaiting/partial).
+  const tabDotFlags = useMemo(() => {
+    const listingRed = deals.some(d => d.created_as_listing && d.status === 'listing' && (tasksByDeal[d.id] || []).some(isTaskOpen))
+    const closedRed = deals.some(d => d.created_as_listing && d.status === 'closed' && (tasksByDeal[d.id] || []).some(isTaskOpen))
+    const closedOrange = deals.some(d => d.status === 'closed' && ['awaiting', 'partial'].includes(paymentStateFor(d, paymentsByDeal[d.id] || [])))
+    return { listing: { red: listingRed, orange: false }, closed: { red: closedRed, orange: closedOrange } }
+  }, [deals, tasksByDeal, paymentsByDeal])
 
   // Client-name + vendor-name index per deal — used by search.
   const searchIndexByDeal = useMemo(() => {
@@ -241,18 +271,25 @@ export default function Deals() {
     if (deal) {
       if (customDates?.length) await Promise.all(customDates.map(cd => supabase.from('custom_dates').insert({ deal_id: deal.id, label: cd.label, date: cd.date })))
       await saveContacts(deal.id, contacts)
+      await refetchTasks() // surface any seeded listing defaults
     }
     setShowNewDeal(false)
   }
 
   const handleEditDeal = async (formData, customDates, contacts) => {
     const deal = await updateDeal(editingDeal.id, formData)
+    // Gate rejection: alert blockers, keep the edit modal open, write nothing.
+    if (deal?.gate) {
+      alert(gateMessage(deal.remaining))
+      return
+    }
     if (deal) {
       if (customDates) {
         await supabase.from('custom_dates').delete().eq('deal_id', deal.id)
         if (customDates.length) await Promise.all(customDates.map(cd => supabase.from('custom_dates').insert({ deal_id: deal.id, label: cd.label, date: cd.date })))
       }
       await saveContacts(deal.id, contacts)
+      await refetchTasks()
     }
     setEditingDeal(null)
   }
@@ -305,11 +342,16 @@ export default function Deals() {
       )}
 
       <div className="flex gap-1 border-b border-gray-200 overflow-x-auto">
-        {TABS.map(tab => (
-          <button key={tab.key} onClick={() => handleTabChange(tab.key)} className={`px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${activeTab === tab.key ? 'border-indigo-primary text-indigo-primary' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-            {tab.label}<span className="ml-1.5 text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded-full">{tab.key === 'all' ? deals.length : deals.filter(d => dealMatchesTab(d, tab.key)).length}</span>
-          </button>
-        ))}
+        {TABS.map(tab => {
+          const dots = tabDotFlags[tab.key]
+          return (
+            <button key={tab.key} onClick={() => handleTabChange(tab.key)} className={`px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${activeTab === tab.key ? 'border-indigo-primary text-indigo-primary' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+              {tab.label}<span className="ml-1.5 text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded-full">{tab.key === 'all' ? deals.length : deals.filter(d => dealMatchesTab(d, tab.key)).length}</span>
+              {dots?.red && <span className="ml-1 inline-block w-2 h-2 rounded-full bg-red-500 align-middle" title="Open checklist items" />}
+              {dots?.orange && <span className="ml-1 inline-block w-2 h-2 rounded-full bg-orange-400 align-middle" title="Outstanding checks" />}
+            </button>
+          )
+        })}
       </div>
 
       <div className="flex flex-col sm:flex-row sm:items-center gap-3">
@@ -361,6 +403,12 @@ export default function Deals() {
                           {deal.listing_cancelled && (
                             <span className="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-rose-100 text-rose-700">Listing Cancelled</span>
                           )}
+                          {(() => {
+                            const ind = taskIndicatorFor(deal, tasksByDeal[deal.id])
+                            if (ind === 'outstanding') return <span className="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700">Outstanding Items</span>
+                            if (ind === 'complete') return <span className="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 text-green-700">All Items Complete</span>
+                            return null
+                          })()}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-right text-gray-700 hidden md:table-cell">{formatCurrency(deal.price)}</td>
@@ -420,11 +468,14 @@ export default function Deals() {
       <DealDetailModal
         deal={selectedDeal}
         open={!!selectedDeal}
-        onClose={() => setSelectedDeal(null)}
+        onClose={() => { setSelectedDeal(null); refetchTasks() }}
         onUpdate={async (id, updates) => {
-          const updated = await updateDeal(id, updates)
-          if (updated) setSelectedDeal(updated)
+          const result = await updateDeal(id, updates)
+          // Gate result ({gate:true}) is not a deal — don't flip local state.
+          if (result && !result.gate) setSelectedDeal(result)
           await refetchPayments()
+          await refetchTasks()
+          return result
         }}
         onPaymentsChanged={refetchPayments}
         agentName={selectedDeal ? getAgentName(selectedDeal.agent_id) : null}

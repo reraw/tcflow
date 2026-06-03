@@ -1,6 +1,57 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { format } from 'date-fns'
+import { DEFAULT_TASK_TEMPLATES } from '../lib/taskTemplates'
+
+// ─────────────────────────────────────────────────────────────────────────
+// Default-task materialization (checklist system)
+// ─────────────────────────────────────────────────────────────────────────
+// Insert the fixed default task rows for a deal+stage, skipping any that
+// already exist (idempotent: guarded both here and by the DB unique index on
+// (deal_id, template_key)). The CALLER decides eligibility — only invoke for
+// deals with created_as_listing === true.
+export async function seedDefaultTasks(dealId, stage) {
+  const templates = DEFAULT_TASK_TEMPLATES[stage]
+  if (!dealId || !templates) return
+  const { data: existing } = await supabase
+    .from('tasks')
+    .select('template_key')
+    .eq('deal_id', dealId)
+    .eq('is_default', true)
+  const have = new Set((existing || []).map(t => t.template_key))
+  const rows = templates
+    .filter(t => !have.has(t.template_key))
+    .map(t => ({
+      deal_id: dealId,
+      description: t.label,
+      is_default: true,
+      template_key: t.template_key,
+      stage: t.stage,
+      status: 'open',
+      completed: false,
+      sort_order: t.sort_order,
+      due_date: null,
+    }))
+  if (rows.length) {
+    const { error } = await supabase.from('tasks').insert(rows)
+    if (error) console.error('seedDefaultTasks error:', error)
+  }
+}
+
+// Labels of still-OPEN default tasks for a deal+stage, ordered by sort_order.
+// Empty array ⟺ the gate passes (also true when no defaults exist at all).
+async function outstandingDefaultLabels(dealId, stage) {
+  const { data } = await supabase
+    .from('tasks')
+    .select('description, status, sort_order')
+    .eq('deal_id', dealId)
+    .eq('is_default', true)
+    .eq('stage', stage)
+    .order('sort_order')
+  return (data || [])
+    .filter(t => t.status !== 'complete' && t.status !== 'na')
+    .map(t => t.description)
+}
 
 export function useDeals() {
   const [deals, setDeals] = useState([])
@@ -28,11 +79,17 @@ export function useDeals() {
   }
 
   const createDeal = async (deal) => {
-    const { data, error } = await supabase.from('deals').insert(deal).select('*').single()
+    const payload = { ...deal }
+    // Origin marker: a deal born as a listing is forever eligible for default
+    // tasks. Never auto-cleared once true.
+    if (payload.status === 'listing') payload.created_as_listing = true
+    const { data, error } = await supabase.from('deals').insert(payload).select('*').single()
     if (error) console.error('createDeal error:', error)
     if (!error && data) {
       setDeals(prev => [data, ...prev])
       await logHistory(data.id, 'Deal created')
+      // Materialize the 8 listing defaults for listing-origin deals.
+      if (data.created_as_listing) await seedDefaultTasks(data.id, 'listing')
       return data
     }
     return null
@@ -41,10 +98,40 @@ export function useDeals() {
   const updateDeal = async (id, updates) => {
     // Grab old deal for comparison
     const oldDeal = deals.find(d => d.id === id)
-    const { data, error } = await supabase.from('deals').update(updates).eq('id', id).select('*').single()
+
+    // ── GATE: block forward status changes out of 'listing' while any
+    // listing-stage default task is still open. Cancelling (status →
+    // 'cancelled') and listing_cancelled toggles ALWAYS bypass this.
+    const advancingFromListing =
+      oldDeal?.status === 'listing' &&
+      (updates.status === 'active' || updates.status === 'closed')
+    if (advancingFromListing && oldDeal?.created_as_listing) {
+      // Safety net for current listings whose defaults were never lazily
+      // seeded (e.g. advanced via the full-edit form without opening the
+      // Tasks tab): ensure they exist, then evaluate.
+      await seedDefaultTasks(id, 'listing')
+      const remaining = await outstandingDefaultLabels(id, 'listing')
+      if (remaining.length) {
+        // ABORT — do not write. Surface blockers to the caller.
+        return { gate: true, remaining }
+      }
+    }
+
+    // Origin marker: a deal updated INTO 'listing' becomes listing-origin.
+    const patch = { ...updates }
+    if (updates.status === 'listing' && oldDeal && !oldDeal.created_as_listing) {
+      patch.created_as_listing = true
+    }
+
+    const { data, error } = await supabase.from('deals').update(patch).eq('id', id).select('*').single()
     if (error) console.error('updateDeal error:', error)
     if (!error && data) {
       setDeals(prev => prev.map(d => d.id === id ? data : d))
+      // Seed defaults on stage entry (only for listing-origin deals).
+      if (data.created_as_listing) {
+        if (updates.status === 'listing') await seedDefaultTasks(id, 'listing')
+        if (updates.status === 'closed' && oldDeal?.status !== 'closed') await seedDefaultTasks(id, 'closed')
+      }
       // Auto-log changes
       if (oldDeal) {
         if (updates.status !== undefined && updates.status !== oldDeal.status) {
@@ -263,7 +350,11 @@ export function useTasks(dealId) {
   useEffect(() => { fetchTasks() }, [fetchTasks])
 
   const createTask = async (task) => {
-    const { data, error } = await supabase.from('tasks').insert(task).select('*, deals(address)').single()
+    // Manual tasks start outstanding (status 'open'); is_default defaults
+    // false in the DB. completed stays synced with status.
+    const payload = { status: 'open', ...task }
+    payload.completed = payload.status === 'complete'
+    const { data, error } = await supabase.from('tasks').insert(payload).select('*, deals(address)').single()
     if (error) console.error('createTask error:', error)
     if (data) setTasks(prev => [...prev, data].sort((a, b) => (a.completed === b.completed ? 0 : a.completed ? 1 : -1)))
     return data
@@ -275,12 +366,37 @@ export function useTasks(dealId) {
     return data
   }
 
+  // Three-state setter. `status` is the source of truth; `completed` is kept
+  // in sync so the Dashboard tasks list (which reads `completed`) stays right.
+  const setTaskStatus = async (id, status) => {
+    const completed = status === 'complete'
+    const { data } = await supabase.from('tasks').update({ status, completed }).eq('id', id).select('*, deals(address)').single()
+    if (data) setTasks(prev => prev.map(t => t.id === id ? data : t))
+    return data
+  }
+
   const deleteTask = async (id) => {
     await supabase.from('tasks').delete().eq('id', id)
     setTasks(prev => prev.filter(t => t.id !== id))
   }
 
-  return { tasks, loading, fetchTasks, createTask, toggleTask, deleteTask }
+  return { tasks, loading, fetchTasks, createTask, toggleTask, setTaskStatus, deleteTask }
+}
+
+// Global tasks cache used by the Deals list for row/tab indicators.
+export function useAllTasks() {
+  const [tasks, setTasks] = useState([])
+
+  const fetchAll = useCallback(async () => {
+    const { data } = await supabase
+      .from('tasks')
+      .select('id, deal_id, status, completed, is_default, stage, template_key')
+    setTasks(data || [])
+  }, [])
+
+  useEffect(() => { fetchAll() }, [fetchAll])
+
+  return { tasks, fetchAll }
 }
 
 export function useAgents() {

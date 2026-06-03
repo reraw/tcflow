@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase'
 import { useDeals, useReminderDismissals, useTasks, useAgents, useAllPayments } from '../hooks/useSupabase'
 import { formatCurrency, formatShortDate, formatDate, generateReminders, REMINDER_COLORS, labelForReminderKey, colorForReminderKey } from '../lib/helpers'
 import { thisMonthMetrics, businessOverviewMetrics, isDead } from '../lib/dashboardMetrics'
+import { gateMessage } from '../lib/taskTemplates'
 import { TrendingUp, Home, XCircle, CheckCircle, DollarSign, Clock, BarChart3, Calendar, Plus, Trash2, Search, X } from 'lucide-react'
 import { format, addMonths, parseISO, startOfMonth, endOfMonth, startOfDay, isWithinInterval } from 'date-fns'
 import DealDetailModal from '../components/deals/DealDetailModal'
@@ -63,7 +64,10 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const { dismissals, isDismissed, getCompletedAt, toggleDismissal } = useReminderDismissals()
   const { updateDeal } = useDeals()
-  const { tasks, createTask, toggleTask } = useTasks()
+  const { tasks, createTask, setTaskStatus } = useTasks()
+  // Default checklist items are managed in the deal's Tasks tab; the Dashboard
+  // quick-list stays a manual-task list as before.
+  const manualTasks = tasks.filter(t => !t.is_default)
   const { agents } = useAgents()
   const { payments: allPayments } = useAllPayments()
 
@@ -236,8 +240,13 @@ export default function Dashboard() {
     : reminderTab === 'active' ? activeReminders : completedReminders
 
   const handleMarkClosed = async (dealId) => {
-    await updateDeal(dealId, { status: 'closed' })
-    setDeals(prev => prev.map(d => d.id === dealId ? { ...d, status: 'closed' } : d))
+    const result = await updateDeal(dealId, { status: 'closed' })
+    // Gate rejection: alert blockers, do NOT optimistically flip local state.
+    if (result?.gate) {
+      alert(gateMessage(result.remaining))
+      return
+    }
+    if (result) setDeals(prev => prev.map(d => d.id === dealId ? { ...d, status: 'closed' } : d))
   }
 
   const handleUpdateDate = async (dealId) => {
@@ -613,16 +622,16 @@ export default function Dashboard() {
               </div>
             )}
 
-            {tasks.filter(t => !t.completed).length === 0 && tasks.filter(t => t.completed).length === 0 ? (
+            {manualTasks.length === 0 ? (
               <p className="text-sm text-gray-400 text-center py-2">No tasks</p>
             ) : (
               <div className="space-y-1.5 max-h-64 overflow-y-auto">
-                {tasks.map(t => (
+                {manualTasks.map(t => (
                   <div key={t.id} className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${t.completed ? 'bg-gray-50 border-gray-200 opacity-60' : 'bg-orange-50 border-orange-200'}`}>
                     <input
                       type="checkbox"
                       checked={t.completed}
-                      onChange={() => toggleTask(t.id, !t.completed)}
+                      onChange={() => setTaskStatus(t.id, t.completed ? 'open' : 'complete')}
                       className="h-4 w-4 rounded border-gray-300 text-indigo-600 shrink-0"
                     />
                     <div className="flex-1 min-w-0">
@@ -646,11 +655,13 @@ export default function Dashboard() {
           open={!!selectedDeal}
           onClose={() => setSelectedDeal(null)}
           onUpdate={async (id, updates) => {
-            const updated = await updateDeal(id, updates)
-            if (updated) {
-              setDeals(prev => prev.map(d => d.id === id ? updated : d))
-              setSelectedDeal(updated)
+            const result = await updateDeal(id, updates)
+            // Gate result is not a deal — don't flip local state on rejection.
+            if (result && !result.gate) {
+              setDeals(prev => prev.map(d => d.id === id ? result : d))
+              setSelectedDeal(result)
             }
+            return result
           }}
           agentName={selectedDeal ? getAgentName(selectedDeal.agent_id) : null}
           coAgentName={selectedDeal ? getAgentName(selectedDeal.co_agent_id) : null}
